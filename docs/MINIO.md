@@ -60,6 +60,7 @@ With an IP-based endpoint, configure the S3 client for path-style addressing.
 - Do not commit `.env.minio`; it contains real storage credentials.
 - For a public test bucket, set `MINIO_DEFAULT_BUCKET_ANONYMOUS_POLICY=download`.
 - For real production, put MinIO behind HTTPS, restrict firewall access, and create a limited app access key instead of using root credentials.
+- If logs show `Fatal glibc error: CPU does not support x86-64-v2`, use the pinned `cpuv1` images from `.env.minio.example` or move to a newer VPS CPU.
 
 ## Stop
 
