@@ -1,0 +1,19 @@
+schema_version = 1
+pyarch_version = "0.1.0"
+
+[project]
+name = "LotUs"
+architecture = "layered"
+
+[database]
+engine = "postgres"
+access = "sync"
+
+[paths]
+application = "app"
+tests = "tests"
+migrations = "alembic"
+
+[state]
+modules = ["item"]
+integrations = ["auth"]

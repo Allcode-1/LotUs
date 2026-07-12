@@ -1,0 +1,56 @@
+name: lotus-minio
+
+services:
+  minio:
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    command: server /data --console-address ":9001"
+    env_file:
+      - ${MINIO_ENV_FILE:-.env.minio}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: ${MINIO_MC_IMAGE:-quay.io/minio/mc:latest}
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ${MINIO_ENV_FILE:-.env.minio}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+
+        : "$${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}"
+        : "$${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}"
+        : "$${MINIO_DEFAULT_BUCKET:?MINIO_DEFAULT_BUCKET is required}"
+
+        policy="$${MINIO_DEFAULT_BUCKET_ANONYMOUS_POLICY:-none}"
+        case "$$policy" in
+          none|download|upload) ;;
+          *)
+            echo "Invalid MINIO_DEFAULT_BUCKET_ANONYMOUS_POLICY=$$policy"
+            echo "Expected one of: none, download, upload"
+            exit 1
+            ;;
+        esac
+
+        mc alias set lotus http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing --region "$${MINIO_BUCKET_REGION:-us-east-1}" "lotus/$$MINIO_DEFAULT_BUCKET"
+        mc anonymous set "$$policy" "lotus/$$MINIO_DEFAULT_BUCKET"
+
+        echo "MinIO bucket is ready: $$MINIO_DEFAULT_BUCKET ($$policy)"
+    restart: "no"
+
+volumes:
+  minio-data:
