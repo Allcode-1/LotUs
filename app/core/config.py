@@ -18,6 +18,24 @@ class AuthJWTSettings(BaseModel):
 class Settings(BaseSettings):
     database_url: str
     auth_jwt: AuthJWTSettings = Field(default_factory=AuthJWTSettings)
+    s3_endpoint_url: str | None = None
+    s3_bucket: str = "lotus-media"
+    s3_region: str = "us-east-1"
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_force_path_style: bool = True
+    s3_presigned_url_expire_seconds: int = 900
+    item_images_max_count: int = 10
+    item_image_max_size_bytes: int = 5 * 1024 * 1024
+    item_image_allowed_content_types: str = "image/jpeg,image/png,image/webp"
+
+    @property
+    def allowed_item_image_content_types(self) -> set[str]:
+        return {
+            content_type.strip()
+            for content_type in self.item_image_allowed_content_types.split(",")
+            if content_type.strip()
+        }
 
     model_config = SettingsConfigDict(
         env_file=".env",

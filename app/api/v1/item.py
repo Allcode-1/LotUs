@@ -1,30 +1,18 @@
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.api.v1.forms import item_create_form
 from app.auth.dependencies import get_current_active_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.item import (
-    ItemCreate,
-    ItemRead,
-    ItemUpdate,
-)
+from app.schemas.item import ItemCreate, ItemImageRead, ItemRead, ItemUpdate
 from app.services import item as item_service
-from app.services.item import ItemNotFoundError
 
 
 router = APIRouter(prefix="/items", tags=["items"])
-DbSession = Annotated[Session, Depends(get_db)]
-CurrentUser = Annotated[User, Depends(get_current_active_user)]
-
-
-def not_found_error(error: ItemNotFoundError) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=str(error),
-    )
 
 
 @router.post(
@@ -33,65 +21,86 @@ def not_found_error(error: ItemNotFoundError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
 )
 def add_item(
-    payload: ItemCreate,
-    db: DbSession,
-    user: CurrentUser,
+    payload: Annotated[ItemCreate, Depends(item_create_form)],
+    images: Annotated[list[UploadFile], File(description="1 to 10 item images")],
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
 ) -> ItemRead:
-    item = item_service.add_item(db, payload)
-    return ItemRead.model_validate(item)
+    return item_service.add_item(db, payload, user, images)
 
 
 @router.get("", response_model=list[ItemRead])
 def get_items(
-    db: DbSession,
-    user: CurrentUser,
-    offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+    offset: int = 0,
+    limit: int = 100,
 ) -> list[ItemRead]:
-    items = item_service.get_items(
-        db,
-        offset=offset,
-        limit=limit,
-    )
-    return [ItemRead.model_validate(item) for item in items]
+    return item_service.get_items(db, offset, limit)
 
 
 @router.get("/{item_id}", response_model=ItemRead)
 def get_item(
-    item_id: int,
-    db: DbSession,
-    user: CurrentUser,
+    item_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
 ) -> ItemRead:
-    try:
-        item = item_service.get_item(db, item_id)
-        return ItemRead.model_validate(item)
-    except ItemNotFoundError as error:
-        raise not_found_error(error) from error
+    return item_service.get_item(db, item_id)
 
 
 @router.patch("/{item_id}", response_model=ItemRead)
 def patch_item(
-    item_id: int,
+    item_id: UUID,
     payload: ItemUpdate,
-    db: DbSession,
-    user: CurrentUser,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
 ) -> ItemRead:
-    try:
-        item = item_service.patch_item(db, item_id, payload)
-        return ItemRead.model_validate(item)
-    except ItemNotFoundError as error:
-        raise not_found_error(error) from error
+    return item_service.patch_item(db, item_id, payload, user)
 
 
 @router.delete(
     "/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
 )
-def delete_item(item_id: int, db: DbSession, user: CurrentUser) -> Response:
-    try:
-        item_service.delete_item(db, item_id)
-    except ItemNotFoundError as error:
-        raise not_found_error(error) from error
+def delete_item(
+    item_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+) -> None:
+    item_service.delete_item(db, item_id, user)
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.post(
+    "/{item_id}/images",
+    response_model=list[ItemImageRead],
+    status_code=status.HTTP_201_CREATED,
+)
+def add_item_images(
+    item_id: UUID,
+    images: Annotated[list[UploadFile], File(description="1 to 10 item images")],
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+) -> list[ItemImageRead]:
+    return item_service.add_images_to_item(db, item_id, user, images)
+
+
+@router.get("/{item_id}/images", response_model=list[ItemImageRead])
+def get_item_images(
+    item_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+) -> list[ItemImageRead]:
+    return item_service.get_item_images(db, item_id)
+
+
+@router.delete(
+    "/{item_id}/images/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_item_image(
+    item_id: UUID,
+    image_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+) -> None:
+    item_service.delete_item_image(db, item_id, image_id, user)

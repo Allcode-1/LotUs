@@ -1,11 +1,15 @@
 from datetime import datetime
-from uuid import UUID, uuid4
 from enum import StrEnum
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, String, func, ForeignKey, Enum as SAEnum, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+
+if TYPE_CHECKING:
+    from app.models.item_image import ItemImage
 
 
 class ItemStatus(StrEnum):
@@ -24,7 +28,7 @@ class Item(Base):
         primary_key=True,
         default=uuid4,
     )
-    
+
     title: Mapped[str] = mapped_column(String(55), nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -45,11 +49,19 @@ class Item(Base):
     status: Mapped[ItemStatus] = mapped_column(
         SAEnum(
             ItemStatus,
-            name = "item_status",
-            values_callable = lambda enum_cls: [item.value for Item in enum_cls]
+            name="item_status",
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
         ),
         nullable=False,
-        default=ItemStatus.DRAFT
+        default=ItemStatus.DRAFT,
+    )
+
+    images: Mapped[list["ItemImage"]] = relationship(
+        "ItemImage",
+        back_populates="item",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ItemImage.sort_order",
     )
 
     created_at: Mapped[datetime] = mapped_column(

@@ -2,9 +2,10 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Uuid, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.models.item import Item
 
 
 class ItemImage(Base):
@@ -17,21 +18,21 @@ class ItemImage(Base):
     )
 
     item_id: Mapped[UUID] = mapped_column(
-    Uuid(as_uuid=True),
-    ForeignKey("items.id", ondelete="CASCADE"),
-    nullable=False,
-    index=True,
-)
+        Uuid(as_uuid=True),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    item: Mapped[Item] = relationship(
+        "Item",
+        back_populates="images",
+    )
 
     storage_key: Mapped[str] = mapped_column(
         String(500),
         nullable=False,
         unique=True,
-    )
-
-    url: Mapped[str] = mapped_column(
-        String(1000),
-        nullable=False,
     )
 
     content_type: Mapped[str] = mapped_column(
