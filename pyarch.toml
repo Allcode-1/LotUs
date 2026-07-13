@@ -15,5 +15,5 @@ tests = "tests"
 migrations = "alembic"
 
 [state]
-modules = ["item"]
+modules = ["item", "balance", "auction"]
 integrations = ["auth"]

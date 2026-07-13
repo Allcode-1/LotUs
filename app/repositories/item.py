@@ -29,9 +29,36 @@ def get_items(
     return list(db.scalars(items).all())
 
 
+def get_user_items(
+    db: Session,
+    user_id: UUID,
+    offset: int = 0,
+    limit: int = 100,
+) -> list[Item]:
+    items = (
+        select(Item)
+        .options(selectinload(Item.images))
+        .where(Item.owner_id == user_id)
+        .order_by(Item.created_at.desc(), Item.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(db.scalars(items).all())
+
+
 def get_item(db: Session, item_id: UUID) -> Item | None:
     item = select(Item).options(selectinload(Item.images)).where(Item.id == item_id)
     return db.scalar(item)
+
+
+def get_items_by_ids_for_update(db: Session, item_ids: list[UUID]) -> list[Item]:
+    items = (
+        select(Item)
+        .options(selectinload(Item.images))
+        .where(Item.id.in_(item_ids))
+        .with_for_update()
+    )
+    return list(db.scalars(items).all())
 
 
 def patch_item(

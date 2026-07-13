@@ -1,9 +1,9 @@
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
 from uuid import UUID, uuid4
 
-from fastapi import UploadFile
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.models.item import Item
 from app.models.item_image import ItemImage
 from app.repositories import item_image as item_image_repository
 from app.schemas.item import ItemImageRead
+from app.services.uploads import UploadFileLike
 from app.storage import create_presigned_url, delete_object, upload_fileobj
 from app.storage.s3 import StorageError
 
@@ -32,13 +33,13 @@ IMAGE_FORMAT_CONTENT_TYPES = {
 
 @dataclass(frozen=True)
 class ValidatedImageUpload:
-    file: UploadFile
+    file: UploadFileLike
     content_type: str
     size_bytes: int
     extension: str
 
 
-def get_upload_file_size(file: UploadFile) -> int:
+def get_upload_file_size(file: UploadFileLike) -> int:
     try:
         file.file.seek(0, os.SEEK_END)
         size = file.file.tell()
@@ -52,7 +53,7 @@ def get_upload_file_size(file: UploadFile) -> int:
     return size
 
 
-def validate_image_bytes(file: UploadFile, content_type: str) -> None:
+def validate_image_bytes(file: UploadFileLike, content_type: str) -> None:
     try:
         file.file.seek(0)
         with Image.open(file.file) as image:
@@ -77,7 +78,7 @@ def validate_image_bytes(file: UploadFile, content_type: str) -> None:
 
 
 def validate_image_files(
-    files: list[UploadFile],
+    files: Sequence[UploadFileLike],
     existing_count: int = 0,
 ) -> list[ValidatedImageUpload]:
     if not files:
@@ -187,7 +188,7 @@ def upload_item_image(
 def add_item_images(
     db: Session,
     item: Item,
-    files: list[UploadFile],
+    files: Sequence[UploadFileLike],
 ) -> tuple[list[ItemImage], list[str]]:
     existing_count = item_image_repository.count_item_images(db, item.id)
     validated_images = validate_image_files(files, existing_count)

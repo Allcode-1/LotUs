@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth import utils as auth_utils
 from app.auth.schemas import TokenPair, UserCreate
 from app.auth.tokens import create_access_token, create_refresh_token
+from app.models.balance import Balance
 from app.models.refresh_session import RefreshSession
 from app.models.user import User
 
@@ -81,6 +82,8 @@ def register_user(payload: UserCreate, db: Session) -> User:
     )
 
     db.add(user)
+    db.flush()
+    db.add(Balance(user_id=user.id))
     db.commit()
     db.refresh(user)
 

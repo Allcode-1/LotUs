@@ -39,6 +39,16 @@ def get_items(
     return item_service.get_items(db, offset, limit)
 
 
+@router.get("/me", response_model=list[ItemRead])
+def get_my_items(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_active_user)],
+    offset: int = 0,
+    limit: int = 100,
+) -> list[ItemRead]:
+    return item_service.get_my_items(db, user, offset, limit)
+
+
 @router.get("/{item_id}", response_model=ItemRead)
 def get_item(
     item_id: UUID,

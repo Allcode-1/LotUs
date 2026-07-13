@@ -10,6 +10,7 @@ from app.db.session import Base
 
 if TYPE_CHECKING:
     from app.models.item_image import ItemImage
+    from app.models.lot import Lot
 
 
 class ItemStatus(StrEnum):
@@ -53,7 +54,7 @@ class Item(Base):
             values_callable=lambda enum_cls: [item.value for item in enum_cls],
         ),
         nullable=False,
-        default=ItemStatus.DRAFT,
+        default=ItemStatus.AVAILABLE,
     )
 
     images: Mapped[list["ItemImage"]] = relationship(
@@ -62,6 +63,12 @@ class Item(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ItemImage.sort_order",
+    )
+
+    lots: Mapped[list["Lot"]] = relationship(
+        "Lot",
+        back_populates="item",
+        order_by="Lot.created_at",
     )
 
     created_at: Mapped[datetime] = mapped_column(

@@ -1,17 +1,26 @@
+from collections.abc import Sequence
 from uuid import UUID
 
-from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.errors import ForbiddenError, NotFoundError, ValidationAppError
-from app.models.item import Item
+from app.core.errors import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationAppError,
+)
+from app.models.item import Item, ItemStatus
 from app.models.user import User
 from app.repositories import item as item_repository
 from app.repositories import item_image as item_image_repository
 from app.schemas.item import ItemCreate, ItemImageRead, ItemRead, ItemUpdate
 from app.services import item_image as item_image_service
+from app.services.uploads import UploadFileLike
 from app.storage import delete_object
 from app.storage.s3 import StorageError
+
+
+MUTABLE_ITEM_STATUSES = {ItemStatus.DRAFT, ItemStatus.AVAILABLE}
 
 
 def get_item_model(db: Session, item_id: UUID) -> Item:
@@ -26,10 +35,18 @@ def get_item_model(db: Session, item_id: UUID) -> Item:
 
 
 def ensure_item_owner(item: Item, user: User) -> None:
-    if item.owner_id != user.id and item.creator_id != user.id:
+    if item.owner_id != user.id:
         raise ForbiddenError(
             "You do not have permission to modify this item",
             code="item_permission_denied",
+        )
+
+
+def ensure_item_mutable(item: Item) -> None:
+    if item.status not in MUTABLE_ITEM_STATUSES:
+        raise ConflictError(
+            "Only available items can be changed",
+            code="item_not_mutable",
         )
 
 
@@ -65,7 +82,7 @@ def add_item(
     db: Session,
     payload: ItemCreate,
     user: User,
-    images: list[UploadFile],
+    images: Sequence[UploadFileLike],
 ) -> ItemRead:
     uploaded_storage_keys: list[str] = []
 
@@ -76,6 +93,7 @@ def add_item(
                 **payload.model_dump(),
                 "creator_id": user.id,
                 "owner_id": user.id,
+                "status": ItemStatus.AVAILABLE,
             },
         )
         _, uploaded_storage_keys = item_image_service.add_item_images(db, item, images)
@@ -103,6 +121,23 @@ def get_items(
     return [item_to_read(item) for item in items]
 
 
+def get_my_items(
+    db: Session,
+    user: User,
+    offset: int = 0,
+    limit: int = 100,
+) -> list[ItemRead]:
+    validate_pagination(offset, limit)
+
+    items = item_repository.get_user_items(
+        db,
+        user_id=user.id,
+        offset=offset,
+        limit=limit,
+    )
+    return [item_to_read(item) for item in items]
+
+
 def get_item(db: Session, item_id: UUID) -> ItemRead:
     return item_to_read(get_item_model(db, item_id))
 
@@ -115,6 +150,7 @@ def patch_item(
 ) -> ItemRead:
     item = get_item_model(db, item_id)
     ensure_item_owner(item, user)
+    ensure_item_mutable(item)
 
     try:
         updated_item = item_repository.patch_item(
@@ -144,6 +180,7 @@ def delete_item(
 ) -> None:
     item = get_item_model(db, item_id)
     ensure_item_owner(item, user)
+    ensure_item_mutable(item)
 
     storage_keys = [image.storage_key for image in item.images]
 
@@ -161,10 +198,11 @@ def add_images_to_item(
     db: Session,
     item_id: UUID,
     user: User,
-    images: list[UploadFile],
+    images: Sequence[UploadFileLike],
 ) -> list[ItemImageRead]:
     item = get_item_model(db, item_id)
     ensure_item_owner(item, user)
+    ensure_item_mutable(item)
 
     uploaded_storage_keys: list[str] = []
 
@@ -205,6 +243,7 @@ def delete_item_image(
 ) -> None:
     item = get_item_model(db, item_id)
     ensure_item_owner(item, user)
+    ensure_item_mutable(item)
 
     image = item_image_repository.get_item_image(
         db,

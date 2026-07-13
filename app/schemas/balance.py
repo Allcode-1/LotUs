@@ -1,7 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # create schema not needed
@@ -11,9 +11,13 @@ from pydantic import BaseModel, Field
 
 
 class BalanceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     user_id: UUID
     amount: Decimal
+    reserved_amount: Decimal
+    available_amount: Decimal
 
 
 class BalanceUpdate(BaseModel):

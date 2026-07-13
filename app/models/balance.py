@@ -2,7 +2,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import Uuid, Numeric, ForeignKey
+from sqlalchemy import ForeignKey, Numeric, Uuid
 
 from app.db.session import Base
 
@@ -13,7 +13,7 @@ class Balance(Base):
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),
         primary_key=True,
-        default=uuid4
+        default=uuid4,
     )
 
     user_id: Mapped[UUID] = mapped_column(
@@ -29,3 +29,14 @@ class Balance(Base):
         nullable=False,
         default=Decimal("0.00"),
     )
+
+    reserved_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0.00",
+    )
+
+    @property
+    def available_amount(self) -> Decimal:
+        return self.amount - self.reserved_amount

@@ -27,6 +27,11 @@ class ForbiddenError(AppError):
     code = "forbidden"
 
 
+class ConflictError(AppError):
+    status_code = HTTPStatus.CONFLICT
+    code = "conflict"
+
+
 class ValidationAppError(AppError):
     status_code = HTTPStatus.BAD_REQUEST
     code = "validation_error"
