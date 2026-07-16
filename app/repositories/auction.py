@@ -39,8 +39,8 @@ def auction_load_options():
 
 def lot_load_options():
     return (
-        joinedload(Lot.auction),
-        joinedload(Lot.item).selectinload(Item.images),
+        joinedload(Lot.auction, innerjoin=True),
+        joinedload(Lot.item, innerjoin=True).selectinload(Item.images),
     )
 
 
@@ -91,7 +91,7 @@ def get_auction_for_update(db: Session, auction_id: UUID) -> Auction | None:
 def get_auction_lots_for_update(db: Session, auction_id: UUID) -> list[Lot]:
     lots = (
         select(Lot)
-        .options(joinedload(Lot.item))
+        .options(joinedload(Lot.item, innerjoin=True))
         .where(Lot.auction_id == auction_id)
         .order_by(Lot.lot_number)
         .with_for_update()

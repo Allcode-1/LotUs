@@ -7,8 +7,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from app.auth import utils as auth_utils
+from app.api.v1 import auction as auction_api
 from app.db.session import Base, get_db
 from app.main import app as fastapi_app
+from app.services import item as item_service
+from app.services import item_image as item_image_service
+from app.ws.auction import auction_ws_manager
 import app.models  # noqa: F401
 
 
@@ -97,5 +102,53 @@ def client(db_session: Session):
 
     with TestClient(fastapi_app) as test_client:
         yield test_client
-    
+
     fastapi_app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def fast_password_hashing(monkeypatch):
+    monkeypatch.setattr(
+        auth_utils,
+        "hash_password",
+        lambda password: f"test-hash:{password}",
+    )
+    monkeypatch.setattr(
+        auth_utils,
+        "validate_password",
+        lambda password, hashed_password: hashed_password == f"test-hash:{password}",
+    )
+
+
+@pytest.fixture(autouse=True)
+def fake_object_storage(monkeypatch):
+    def fake_upload_fileobj(fileobj, storage_key: str, content_type: str) -> None:
+        fileobj.seek(0)
+
+    monkeypatch.setattr(item_image_service, "upload_fileobj", fake_upload_fileobj)
+    monkeypatch.setattr(
+        item_image_service,
+        "create_presigned_url",
+        lambda storage_key: f"https://storage.test/{storage_key}",
+    )
+    monkeypatch.setattr(item_image_service, "delete_object", lambda storage_key: None)
+    monkeypatch.setattr(item_service, "delete_object", lambda storage_key: None)
+
+
+@pytest.fixture(autouse=True)
+def disable_auto_confirm_timer(monkeypatch):
+    async def no_auto_confirm(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        auction_api.auction_timers,
+        "auto_confirm_lot_sale",
+        no_auto_confirm,
+    )
+
+
+@pytest.fixture(autouse=True)
+def clear_websocket_connections():
+    auction_ws_manager._connections.clear()
+    yield
+    auction_ws_manager._connections.clear()

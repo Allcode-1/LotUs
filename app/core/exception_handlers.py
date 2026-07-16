@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -26,13 +27,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content={
-                "error": {
-                    "code": "request_validation_error",
-                    "message": "Request validation failed",
-                    "fields": error.errors(),
+            content=jsonable_encoder(
+                {
+                    "error": {
+                        "code": "request_validation_error",
+                        "message": "Request validation failed",
+                        "fields": error.errors(),
+                    }
                 }
-            },
+            ),
         )
 
     @app.exception_handler(ValidationError)
@@ -42,11 +45,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content={
-                "error": {
-                    "code": "validation_error",
-                    "message": "Validation failed",
-                    "fields": error.errors(),
+            content=jsonable_encoder(
+                {
+                    "error": {
+                        "code": "validation_error",
+                        "message": "Validation failed",
+                        "fields": error.errors(),
+                    }
                 }
-            },
+            ),
         )
