@@ -38,6 +38,8 @@ Authentication uses RS256 JWT access tokens and refresh tokens. Access tokens au
 - Missing or invalid access token returns `401`.
 - Inactive user returns `403`.
 - Non-admin user calling an admin endpoint returns `403`.
+- Register/login are rate-limited through Redis.
+- Bid commands are rate-limited through Redis.
 - WebSocket connections require `?token=<access_token>`.
 - Invalid WebSocket token or missing auction closes the connection with policy violation code `1008`.
 
@@ -89,7 +91,7 @@ Admins do not currently bypass item ownership for editing/deleting items or addi
 ## Current Gaps
 
 - There is no public admin bootstrap endpoint.
-- There is no rate limiting yet.
+- Rate limiting exists for auth and bids, but broader abuse detection is not implemented yet.
 - There is no per-action audit log yet.
 - There is no fine-grained permission table; role checks are coded directly in services/dependencies.
 - There is no object-level admin override for item mutation.

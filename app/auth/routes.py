@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, status
+from fastapi import APIRouter, Depends, Form, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,9 @@ from app.auth.dependencies import get_current_active_user, require_admin
 from app.auth.schemas import RefreshToken, TokenPair, UserCreate, UserRead
 from app.db.session import get_db
 from app.models.user import User
+from app.rate_limit import policies as rate_limit_policies
+from app.rate_limit.dependencies import get_rate_limiter
+from app.rate_limit.service import RateLimiter
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -17,17 +20,23 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(
     payload: UserCreate,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
+    rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> User:
+    rate_limit_policies.check_register_rate_limit(rate_limiter, request)
     return auth_service.register_user(payload, db)
 
 
 @router.post("/login", response_model=TokenPair)
 def login_user(
+    request: Request,
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     db: Annotated[Session, Depends(get_db)],
+    rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> TokenPair:
+    rate_limit_policies.check_login_rate_limit(rate_limiter, request, username)
     return auth_service.login_user(username, password, db)
 
 

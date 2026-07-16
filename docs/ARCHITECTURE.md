@@ -16,11 +16,16 @@ FastAPI route -> service -> repository -> SQLAlchemy/PostgreSQL
 - `app/repositories`: SQLAlchemy query helpers.
 - `app/models`: SQLAlchemy models, relationships, enums, and database constraints.
 - `app/schemas`: Pydantic request/response contracts.
+- `app/redis`: Redis connection plumbing only.
+- `app/rate_limit`: generic Redis-backed counters and endpoint policies.
+- `app/cache`: cache-aside adapters and entity-specific cache keys.
 - `app/ws`: in-memory WebSocket connection manager.
 - `app/core`: settings, domain errors, and global exception handlers.
 - `app/storage`: S3-compatible object storage adapter.
 
 For aggregate commands like bidding and settlement, services own `commit` and `rollback`. That keeps multi-model changes atomic: lot state, bid record, item owner/status, and balances move together.
+
+Redis-backed concerns stay outside the domain services. Routes compose rate-limit policies and cache invalidation around service calls; the domain service still only knows SQLAlchemy and domain errors.
 
 ## Domain Boundaries
 
@@ -142,21 +147,47 @@ Server events currently include:
 
 On reconnect, the client should fetch a fresh REST snapshot. The in-memory manager does not store missed events.
 
+## Redis Usage
+
+Redis is currently used for two concerns:
+
+- rate limiting;
+- cache-aside auction snapshots.
+
+Rate limiting uses fixed windows with atomic Redis `INCR` plus `EXPIRE`:
+
+- register: per client IP;
+- login: per client IP and per username+IP;
+- bids: per bidder and per lot.
+
+Rate limiting is fail-closed by default. If Redis is unavailable, protected commands return a service-unavailable error instead of silently allowing unlimited traffic. This can be changed through configuration for local experiments.
+
+Auction snapshot caching follows cache-aside:
+
+```text
+GET auction -> Redis lookup -> DB on miss -> serialize AuctionRead -> set TTL
+mutation -> commit DB changes -> delete cached auction snapshot
+```
+
+The cached snapshot TTL is intentionally short because auction responses include presigned item image URLs. Current invalidation points include auction start/cancel/finish, lot sale confirmation, and bid placement.
+
 ## Testing Strategy
 
 Tests are integration-oriented:
 
 - HTTP tests cover auth, item upload, balance top-up, auction lifecycle, bidding, settlement, permissions, and negative paths.
 - WebSocket tests open an ASGI WebSocket connection, assert snapshot/ping behavior, reject invalid tokens, and verify that an HTTP bid broadcasts `bid_placed`.
+- Rate-limit tests use a fake Redis and assert `429` responses without requiring a live Redis process.
+- Cache tests use fake Redis to prove cache-aside reads and mutation invalidation.
 - DB invariant tests intentionally try to write impossible states and expect `IntegrityError`.
 
-External object storage is faked in tests, password hashing is shortened, the in-memory sale timer is disabled, and each test runs inside an isolated database transaction.
+External object storage is faked in tests, Redis is faked in tests, password hashing is shortened, the in-memory sale timer is disabled, and each test runs inside an isolated database transaction.
 
 ## Known MVP Limits
 
 - WebSocket manager is process-local.
 - Sale timer is process-local and not durable.
-- No Redis pub/sub, rate limiting, or cache layer yet.
+- No Redis pub/sub layer yet.
 - No background job worker yet.
 - No payment integration yet.
 - No production observability/audit trail yet.

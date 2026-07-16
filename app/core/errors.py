@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from typing import Mapping
 
 
 class AppError(Exception):
@@ -10,11 +11,18 @@ class AppError(Exception):
         message: str,
         code: str | None = None,
         status_code: HTTPStatus | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         self.message = message
         self.code = code or self.code
         self.status_code = status_code or self.status_code
+        self.headers = dict(headers or {})
         super().__init__(message)
+
+
+class UnauthorizedError(AppError):
+    status_code = HTTPStatus.UNAUTHORIZED
+    code = "unauthorized"
 
 
 class NotFoundError(AppError):
@@ -35,6 +43,16 @@ class ConflictError(AppError):
 class ValidationAppError(AppError):
     status_code = HTTPStatus.BAD_REQUEST
     code = "validation_error"
+
+
+class TooManyRequestsError(AppError):
+    status_code = HTTPStatus.TOO_MANY_REQUESTS
+    code = "too_many_requests"
+
+
+class ServiceUnavailableError(AppError):
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    code = "service_unavailable"
 
 
 class ExternalServiceError(AppError):

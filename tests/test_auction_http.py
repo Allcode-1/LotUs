@@ -3,6 +3,7 @@ from uuid import UUID
 
 from app.models.lot import Lot
 from app.models.user import UserRole
+from app.core.config import settings
 from app.services.auction import utc_now
 from tests.helpers import (
     assert_error_code,
@@ -262,6 +263,46 @@ def test_bid_invariants_for_owner_price_increment_and_reservations(
     )
     assert closed_window_response.status_code == 409
     assert_error_code(closed_window_response, "lot_bid_window_closed")
+
+
+def test_bid_rate_limit_blocks_excessive_bids(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "bid_user_rate_limit_limit", 1)
+    monkeypatch.setattr(settings, "bid_user_rate_limit_window_seconds", 60)
+
+    seller, _seller_tokens, seller_headers = create_user_with_token(
+        client,
+        "rate_seller",
+    )
+    bidder, _bidder_tokens, bidder_headers = create_user_with_token(
+        client,
+        "rate_bidder",
+    )
+    _admin, _admin_tokens, admin_headers = create_user_with_token(
+        client,
+        "rate_admin",
+        db_session,
+        role=UserRole.ADMIN,
+    )
+
+    item = create_item(client, seller_headers, title="Rate limited bid item")
+    auction = create_auction(client, seller_headers, [item["id"]])
+    lot = start_auction(client, seller_headers, auction["id"])["lots"][0]
+    top_up_balance(client, admin_headers, bidder["id"], amount="500.00")
+
+    first_bid_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=bidder_headers,
+        json={"amount": "100.00"},
+    )
+    assert first_bid_response.status_code == 201, first_bid_response.text
+
+    limited_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=bidder_headers,
+        json={"amount": "105.00"},
+    )
+    assert limited_response.status_code == 429
+    assert_error_code(limited_response, "rate_limit_exceeded")
 
 
 def test_admin_can_start_and_finish_auction_but_stranger_cannot(

@@ -5,11 +5,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_active_user
+from app.cache.auction import AuctionCache
+from app.cache.dependencies import get_auction_cache
 from app.db.session import get_db
 from app.models.auction import AuctionStatus
 from app.models.user import User
+from app.rate_limit import policies as rate_limit_policies
+from app.rate_limit.dependencies import get_rate_limiter
+from app.rate_limit.service import RateLimiter
 from app.schemas.auction import AuctionCreate, AuctionRead, BidCreate, BidRead, LotRead
 from app.services import auction as auction_service
+from app.services import auction_query as auction_query_service
 from app.services import auction_timers
 from app.ws.auction import auction_ws_manager
 
@@ -51,8 +57,9 @@ def get_auction(
     auction_id: UUID,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> AuctionRead:
-    return auction_service.get_auction(db, auction_id)
+    return auction_query_service.get_auction(db, auction_cache, auction_id)
 
 
 @router.post("/{auction_id}/start", response_model=AuctionRead)
@@ -61,8 +68,10 @@ def start_auction(
     background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> AuctionRead:
     auction = auction_service.start_auction(db, auction_id, user)
+    auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
         auction_ws_manager.broadcast,
         auction_id,
@@ -80,8 +89,10 @@ def cancel_auction(
     background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> AuctionRead:
     auction = auction_service.cancel_auction(db, auction_id, user)
+    auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
         auction_ws_manager.broadcast,
         auction_id,
@@ -99,8 +110,10 @@ def finish_auction(
     background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> AuctionRead:
     auction = auction_service.finish_auction(db, auction_id, user)
+    auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
         auction_ws_manager.broadcast,
         auction_id,
@@ -119,8 +132,10 @@ def confirm_lot_sale(
     background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> LotRead:
     lot = auction_service.confirm_lot_sale(db, auction_id, lot_id, user)
+    auction_cache.invalidate_auction(auction_id)
     auction = auction_service.get_auction(db, auction_id)
     background_tasks.add_task(
         auction_timers.broadcast_lot_sold,
@@ -151,8 +166,17 @@ def place_bid(
     background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(get_current_active_user)],
+    rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
 ) -> BidRead:
+    rate_limit_policies.check_bid_rate_limit(
+        rate_limiter,
+        user.id,
+        auction_id,
+        lot_id,
+    )
     bid = auction_service.place_bid(db, auction_id, lot_id, payload, user)
+    auction_cache.invalidate_auction(auction_id)
     lot = auction_service.get_lot(db, auction_id, lot_id)
 
     background_tasks.add_task(

@@ -11,10 +11,12 @@ from app.auth import utils as auth_utils
 from app.api.v1 import auction as auction_api
 from app.db.session import Base, get_db
 from app.main import app as fastapi_app
+from app.redis.client import get_redis
 from app.services import item as item_service
 from app.services import item_image as item_image_service
 from app.ws.auction import auction_ws_manager
 import app.models  # noqa: F401
+from tests.fakes import FakeRedis
 
 
 load_dotenv()
@@ -94,11 +96,20 @@ def db_session(test_engine):
 
 
 @pytest.fixture(scope="function")
-def client(db_session: Session):
+def fake_redis():
+    return FakeRedis()
+
+
+@pytest.fixture(scope="function")
+def client(db_session: Session, fake_redis: FakeRedis):
     def override_get_db():
         yield db_session
 
+    def override_get_redis():
+        return fake_redis
+
     fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[get_redis] = override_get_redis
 
     with TestClient(fastapi_app) as test_client:
         yield test_client
