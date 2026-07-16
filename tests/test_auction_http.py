@@ -88,6 +88,15 @@ def test_create_start_bid_and_confirm_lot_sale_happy_path(client, db_session):
         item["id"]
     ]
 
+    resale_auction = create_auction(
+        client,
+        bidder_headers,
+        [item["id"]],
+        title="Resale auction",
+    )
+    assert resale_auction["status"] == "scheduled"
+    assert resale_auction["seller_id"] == bidder["id"]
+
 
 def test_auction_creation_rejects_foreign_duplicate_and_locked_items(client):
     _owner, _owner_tokens, owner_headers = create_user_with_token(client, "owner")
@@ -127,6 +136,20 @@ def test_auction_creation_rejects_foreign_duplicate_and_locked_items(client):
     assert_error_code(duplicate_response, "duplicate_auction_item")
 
     auction = create_auction(client, owner_headers, [item["id"]])
+
+    second_open_auction_response = client.post(
+        "/api/v1/auctions",
+        headers=owner_headers,
+        json={
+            "title": "Second open auction",
+            "starts_at": "2030-01-01T12:00:00+00:00",
+            "ends_at": "2030-01-01T13:00:00+00:00",
+            "min_bid_increment": "5.00",
+            "lots": [{"item_id": item["id"], "start_price": "100.00"}],
+        },
+    )
+    assert second_open_auction_response.status_code == 409
+    assert_error_code(second_open_auction_response, "item_not_available_for_auction")
 
     patch_response = client.patch(
         f"/api/v1/items/{item['id']}",
@@ -227,7 +250,9 @@ def test_bid_invariants_for_owner_price_increment_and_reservations(
 
     lot_model = db_session.get(Lot, UUID(lot["id"]))
     assert lot_model is not None
-    lot_model.sale_confirmable_at = utc_now() - timedelta(seconds=1)
+    closed_bid_time = utc_now() - timedelta(seconds=31)
+    lot_model.last_bid_at = closed_bid_time
+    lot_model.sale_confirmable_at = closed_bid_time + timedelta(seconds=30)
     db_session.commit()
 
     closed_window_response = client.post(

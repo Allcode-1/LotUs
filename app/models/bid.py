@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 class Bid(Base):
     __tablename__ = "bids"
+    __table_args__ = (CheckConstraint("amount > 0", name="ck_bids_amount_positive"),)
 
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),

@@ -4,7 +4,16 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Numeric, String, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum as SAEnum,
+    ForeignKey,
+    Numeric,
+    String,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -22,6 +31,13 @@ class AuctionStatus(StrEnum):
 
 class Auction(Base):
     __tablename__ = "auctions"
+    __table_args__ = (
+        CheckConstraint("ends_at > starts_at", name="ck_auctions_time_window"),
+        CheckConstraint(
+            "min_bid_increment > 0",
+            name="ck_auctions_min_bid_increment_positive",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),

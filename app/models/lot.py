@@ -5,14 +5,17 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,7 +38,41 @@ class LotStatus(StrEnum):
 class Lot(Base):
     __tablename__ = "lots"
     __table_args__ = (
+        CheckConstraint("lot_number > 0", name="ck_lots_lot_number_positive"),
+        CheckConstraint("start_price > 0", name="ck_lots_start_price_positive"),
+        CheckConstraint("current_price > 0", name="ck_lots_current_price_positive"),
+        CheckConstraint(
+            "current_price >= start_price",
+            name="ck_lots_current_price_not_below_start",
+        ),
+        CheckConstraint(
+            "min_bid_increment IS NULL OR min_bid_increment > 0",
+            name="ck_lots_min_bid_increment_positive",
+        ),
+        CheckConstraint(
+            "sold_price IS NULL OR sold_price > 0",
+            name="ck_lots_sold_price_positive",
+        ),
+        CheckConstraint(
+            "sale_confirmable_at IS NULL OR last_bid_at IS NOT NULL",
+            name="ck_lots_sale_confirmable_requires_last_bid",
+        ),
+        CheckConstraint(
+            "sale_confirmable_at IS NULL OR sale_confirmable_at >= last_bid_at",
+            name="ck_lots_sale_confirmable_after_last_bid",
+        ),
+        CheckConstraint(
+            "(sold_at IS NULL AND sold_price IS NULL) "
+            "OR (sold_at IS NOT NULL AND sold_price IS NOT NULL)",
+            name="ck_lots_sold_timestamp_price_pair",
+        ),
         UniqueConstraint("auction_id", "lot_number", name="uq_lots_auction_number"),
+        Index(
+            "ix_lots_one_open_lot_per_item",
+            "item_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'active')"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
