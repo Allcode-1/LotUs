@@ -171,6 +171,40 @@ mutation -> commit DB changes -> delete cached auction snapshot
 
 The cached snapshot TTL is intentionally short because auction responses include presigned item image URLs. Current invalidation points include auction start/cancel/finish, lot sale confirmation, and bid placement.
 
+## Logging and Observability
+
+Logging is configured in `app/core/logging.py` and attached through `RequestContextMiddleware`.
+
+The current logging layer provides:
+
+- request-scoped `X-Request-ID`;
+- HTTP completion logs with method, path, status, duration, client IP, and user agent;
+- application error logs from the global exception handlers;
+- focused domain event logs for auth, balance top-up, auction lifecycle, bids, lot settlement, Redis rate-limit/cache failures, and WebSocket room connection flow;
+- `LOG_LEVEL` and `LOG_FORMAT` configuration.
+
+By default logs use a readable console format:
+
+```text
+2026-07-16 12:00:00 | INFO     | app.services.auction | req=... | bid placed | event="bid_placed" auction_id="..." lot_id="..."
+```
+
+For containerized deployments, set:
+
+```text
+LOG_FORMAT=json
+```
+
+JSON logs are intended for collectors such as Filebeat, Fluent Bit, Vector, Promtail, or a cloud logging agent. The application writes logs to stdout; Docker, systemd, Kubernetes, or the host logging agent is responsible for storing and shipping them. File-based log rotation is intentionally not part of the app layer yet because stdout works better for multi-process/container deployments.
+
+ELK/Loki-style log aggregation can be added around the existing logger without changing service code:
+
+```text
+app stdout -> container/host log collector -> Elasticsearch or Loki -> dashboards/search
+```
+
+Prometheus is a separate concern. It should not scrape application logs. When metrics are added, expose numeric counters/histograms through a `/metrics` endpoint, for example request count, request latency, bid count, rate-limit hits, Redis failures, and WebSocket connection counts.
+
 ## Testing Strategy
 
 Tests are integration-oriented:

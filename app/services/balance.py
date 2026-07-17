@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from app.repositories import user as user_repository
 
 
 ZERO_MONEY = Decimal("0.00")
+logger = logging.getLogger(__name__)
 
 
 def ensure_user_exists(db: Session, user_id: UUID) -> None:
@@ -57,6 +59,16 @@ def top_up_balance(db: Session, user_id: UUID, amount: Decimal) -> Balance:
 
     db.commit()
     db.refresh(balance)
+
+    logger.info(
+        "balance topped up",
+        extra={
+            "event": "balance_topped_up",
+            "user_id": str(user_id),
+            "amount": str(amount),
+            "balance_amount": str(balance.amount),
+        },
+    )
 
     return balance
 

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.models.user import User
 
 
 AUTH_HEADERS = {"WWW-Authenticate": "Bearer"}
+logger = logging.getLogger(__name__)
 
 
 def invalid_token_error() -> UnauthorizedError:
@@ -98,6 +100,15 @@ def register_user(payload: UserCreate, db: Session) -> User:
     db.commit()
     db.refresh(user)
 
+    logger.info(
+        "user registered",
+        extra={
+            "event": "user_registered",
+            "user_id": str(user.id),
+            "username": user.username,
+        },
+    )
+
     return user
 
 
@@ -105,12 +116,38 @@ def authenticate_user(username: str, password: str, db: Session) -> User:
     user = db.scalar(select(User).where(User.username == username))
 
     if not user:
+        logger.warning(
+            "login failed",
+            extra={
+                "event": "login_failed",
+                "username": username,
+                "reason": "user_not_found",
+            },
+        )
         raise invalid_credentials_error()
 
     if not auth_utils.validate_password(password, user.hashed_password):
+        logger.warning(
+            "login failed",
+            extra={
+                "event": "login_failed",
+                "user_id": str(user.id),
+                "username": username,
+                "reason": "invalid_password",
+            },
+        )
         raise invalid_credentials_error()
 
     if not user.is_active:
+        logger.warning(
+            "login failed",
+            extra={
+                "event": "login_failed",
+                "user_id": str(user.id),
+                "username": username,
+                "reason": "user_inactive",
+            },
+        )
         raise ForbiddenError("User inactive", code="user_inactive")
 
     return user
@@ -118,7 +155,16 @@ def authenticate_user(username: str, password: str, db: Session) -> User:
 
 def login_user(username: str, password: str, db: Session) -> TokenPair:
     user = authenticate_user(username, password, db)
-    return create_token_pair(user, db)
+    tokens = create_token_pair(user, db)
+    logger.info(
+        "user logged in",
+        extra={
+            "event": "user_logged_in",
+            "user_id": str(user.id),
+            "username": user.username,
+        },
+    )
+    return tokens
 
 
 def logout_user(refresh_token: str, db: Session) -> dict[str, str]:
@@ -127,6 +173,14 @@ def logout_user(refresh_token: str, db: Session) -> dict[str, str]:
 
     refresh_session.revoked_at = datetime.now(timezone.utc)
     db.commit()
+
+    logger.info(
+        "user logged out",
+        extra={
+            "event": "user_logged_out",
+            "user_id": str(refresh_session.user_id),
+        },
+    )
 
     return {"message": "Logged out"}
 
@@ -161,4 +215,12 @@ def refresh_tokens(refresh_token: str, db: Session) -> TokenPair:
 
     refresh_session.revoked_at = now
 
-    return create_token_pair(user, db)
+    tokens = create_token_pair(user, db)
+    logger.info(
+        "tokens refreshed",
+        extra={
+            "event": "tokens_refreshed",
+            "user_id": str(user.id),
+        },
+    )
+    return tokens

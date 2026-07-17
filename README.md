@@ -14,6 +14,7 @@ This is not a production marketplace yet. The current focus is a correct domain 
 - WebSocket auction rooms for live events over REST/DB truth.
 - Redis-backed rate limiting for auth and bid commands.
 - Cache-aside auction snapshots with explicit invalidation after mutations.
+- Request-scoped application logging with domain events for auth, auctions, bids, balance, Redis, and WebSocket flow.
 - Pytest integration coverage for auth, items, balances, auctions, bidding, WebSocket flow, and DB-level impossible states.
 
 ## Current Capabilities

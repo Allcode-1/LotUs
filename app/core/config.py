@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     bid_lot_rate_limit_limit: int = 120
     bid_lot_rate_limit_window_seconds: int = 60
     cors_allowed_origins: str = ""
+    log_level: str = "INFO"
+    log_format: str = "plain"
     s3_endpoint_url: str | None = None
     s3_bucket: str = "lotus-media"
     s3_region: str = "us-east-1"

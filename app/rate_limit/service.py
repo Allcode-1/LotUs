@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from hashlib import sha256
 
@@ -6,6 +7,9 @@ from redis.exceptions import RedisError
 from app.core.config import settings
 from app.core.errors import ServiceUnavailableError, TooManyRequestsError
 from app.redis.client import RedisClient
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,14 @@ class RateLimiter:
                 self.redis.expire(key, rule.window_seconds)
             ttl = self.redis.ttl(key)
         except RedisError as error:
+            logger.warning(
+                "rate limit backend unavailable",
+                extra={
+                    "event": "rate_limit_unavailable",
+                    "rule": rule.name,
+                    "fail_open": settings.rate_limit_fail_open,
+                },
+            )
             if settings.rate_limit_fail_open:
                 return
             raise ServiceUnavailableError(
@@ -39,6 +51,16 @@ class RateLimiter:
 
         retry_after = max(ttl, 1)
         if current_count > rule.limit:
+            logger.warning(
+                "rate limit exceeded",
+                extra={
+                    "event": "rate_limit_exceeded",
+                    "rule": rule.name,
+                    "limit": rule.limit,
+                    "window_seconds": rule.window_seconds,
+                    "retry_after": retry_after,
+                },
+            )
             raise TooManyRequestsError(
                 f"Too many requests. Try again in {retry_after} seconds.",
                 code="rate_limit_exceeded",

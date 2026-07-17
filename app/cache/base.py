@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 from redis.exceptions import RedisError
@@ -6,6 +7,9 @@ from redis.exceptions import RedisError
 from app.core.config import settings
 from app.core.errors import ServiceUnavailableError
 from app.redis.client import RedisClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class RedisCache:
@@ -19,6 +23,14 @@ class RedisCache:
         try:
             raw_value = self.redis.get(key)
         except RedisError as error:
+            logger.warning(
+                "cache backend unavailable on get",
+                extra={
+                    "event": "cache_unavailable",
+                    "operation": "get",
+                    "fail_open": settings.cache_fail_open,
+                },
+            )
             if settings.cache_fail_open:
                 return None
             raise ServiceUnavailableError(
@@ -37,6 +49,14 @@ class RedisCache:
         try:
             self.redis.setex(key, ttl, json.dumps(value))
         except RedisError as error:
+            logger.warning(
+                "cache backend unavailable on set",
+                extra={
+                    "event": "cache_unavailable",
+                    "operation": "set",
+                    "fail_open": settings.cache_fail_open,
+                },
+            )
             if settings.cache_fail_open:
                 return
             raise ServiceUnavailableError(
@@ -51,6 +71,14 @@ class RedisCache:
         try:
             self.redis.delete(*keys)
         except RedisError as error:
+            logger.warning(
+                "cache backend unavailable on delete",
+                extra={
+                    "event": "cache_unavailable",
+                    "operation": "delete",
+                    "fail_open": settings.cache_fail_open,
+                },
+            )
             if settings.cache_fail_open:
                 return
             raise ServiceUnavailableError(

@@ -68,3 +68,91 @@ def test_item_upload_rejects_invalid_image_payload(client):
     )
     assert mismatch_response.status_code == 415
     assert_error_code(mismatch_response, "image_content_type_mismatch")
+
+
+def test_item_owner_permissions_for_update_images_and_delete(client, db_session):
+    _owner, _owner_tokens, owner_headers = create_user_with_token(
+        client,
+        "item_lifecycle_owner",
+    )
+    _stranger, _stranger_tokens, stranger_headers = create_user_with_token(
+        client,
+        "item_lifecycle_stranger",
+    )
+
+    item = create_item(client, owner_headers, title="Editable item")
+    initial_image_id = item["images"][0]["id"]
+
+    stranger_patch_response = client.patch(
+        f"/api/v1/items/{item['id']}",
+        headers=stranger_headers,
+        json={"title": "Stolen title"},
+    )
+    assert stranger_patch_response.status_code == 403
+    assert_error_code(stranger_patch_response, "item_permission_denied")
+
+    owner_patch_response = client.patch(
+        f"/api/v1/items/{item['id']}",
+        headers=owner_headers,
+        json={"title": "Updated item", "description": "Updated description"},
+    )
+    assert owner_patch_response.status_code == 200, owner_patch_response.text
+    assert owner_patch_response.json()["title"] == "Updated item"
+    assert owner_patch_response.json()["description"] == "Updated description"
+
+    stranger_add_image_response = client.post(
+        f"/api/v1/items/{item['id']}/images",
+        headers=stranger_headers,
+        files=[("images", ("extra.png", png_bytes(), "image/png"))],
+    )
+    assert stranger_add_image_response.status_code == 403
+    assert_error_code(stranger_add_image_response, "item_permission_denied")
+
+    owner_add_image_response = client.post(
+        f"/api/v1/items/{item['id']}/images",
+        headers=owner_headers,
+        files=[("images", ("extra.png", png_bytes(), "image/png"))],
+    )
+    assert owner_add_image_response.status_code == 201, owner_add_image_response.text
+    added_image = owner_add_image_response.json()[0]
+    assert added_image["sort_order"] == 1
+    assert added_image["is_primary"] is False
+
+    stranger_delete_image_response = client.delete(
+        f"/api/v1/items/{item['id']}/images/{added_image['id']}",
+        headers=stranger_headers,
+    )
+    assert stranger_delete_image_response.status_code == 403
+    assert_error_code(stranger_delete_image_response, "item_permission_denied")
+
+    owner_delete_image_response = client.delete(
+        f"/api/v1/items/{item['id']}/images/{added_image['id']}",
+        headers=owner_headers,
+    )
+    assert owner_delete_image_response.status_code == 204
+    db_session.expire_all()
+
+    images_response = client.get(
+        f"/api/v1/items/{item['id']}/images", headers=owner_headers
+    )
+    assert images_response.status_code == 200, images_response.text
+    assert [image["id"] for image in images_response.json()] == [initial_image_id]
+
+    stranger_delete_item_response = client.delete(
+        f"/api/v1/items/{item['id']}",
+        headers=stranger_headers,
+    )
+    assert stranger_delete_item_response.status_code == 403
+    assert_error_code(stranger_delete_item_response, "item_permission_denied")
+
+    owner_delete_item_response = client.delete(
+        f"/api/v1/items/{item['id']}",
+        headers=owner_headers,
+    )
+    assert owner_delete_item_response.status_code == 204
+
+    deleted_item_response = client.get(
+        f"/api/v1/items/{item['id']}", headers=owner_headers
+    )
+    assert deleted_item_response.status_code == 404
+    assert_error_code(deleted_item_response, "item_not_found")

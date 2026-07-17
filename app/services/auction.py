@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
@@ -24,6 +25,7 @@ from app.services import item as item_service
 
 ZERO_MONEY = Decimal("0.00")
 SALE_CONFIRMATION_DELAY_SECONDS = 30
+logger = logging.getLogger(__name__)
 AUCTIONABLE_ITEM_STATUSES = {ItemStatus.DRAFT, ItemStatus.AVAILABLE}
 TERMINAL_LOT_STATUSES = {
     LotStatus.SOLD,
@@ -250,6 +252,17 @@ def create_auction(db: Session, payload: AuctionCreate, user: User) -> AuctionRe
             item.status = ItemStatus.IN_AUCTION
 
         db.commit()
+        logger.info(
+            "auction created",
+            extra={
+                "event": "auction_created",
+                "auction_id": str(auction.id),
+                "seller_id": str(user.id),
+                "lots_count": len(payload.lots),
+                "starts_at": starts_at.isoformat(),
+                "ends_at": ends_at.isoformat(),
+            },
+        )
         return auction_to_read(get_auction_model(db, auction.id))
     except Exception:
         db.rollback()
@@ -320,6 +333,15 @@ def start_auction(db: Session, auction_id: UUID, user: User) -> AuctionRead:
                 lot.status = LotStatus.ACTIVE
 
         db.commit()
+        logger.info(
+            "auction started",
+            extra={
+                "event": "auction_started",
+                "auction_id": str(auction.id),
+                "operator_id": str(user.id),
+                "lots_count": len(lots),
+            },
+        )
         return auction_to_read(get_auction_model(db, auction.id))
     except Exception:
         db.rollback()
@@ -425,6 +447,8 @@ def place_bid(
                 code="insufficient_available_balance",
             )
 
+        previous_winner_id = lot.winner_id
+        previous_price = lot.current_price
         if lot.winner_id is not None:
             previous_winner_balance = balance_service.get_or_create_balance_model(
                 db,
@@ -457,6 +481,22 @@ def place_bid(
 
         db.commit()
         db.refresh(bid)
+        logger.info(
+            "bid placed",
+            extra={
+                "event": "bid_placed",
+                "auction_id": str(auction_id),
+                "lot_id": str(lot.id),
+                "bid_id": str(bid.id),
+                "bidder_id": str(bidder.id),
+                "amount": str(payload.amount),
+                "previous_winner_id": (
+                    str(previous_winner_id) if previous_winner_id else None
+                ),
+                "previous_price": str(previous_price) if previous_winner_id else None,
+                "sale_confirmable_at": sale_confirmable_at.isoformat(),
+            },
+        )
         return bid_to_read(bid)
     except Exception:
         db.rollback()
@@ -567,8 +607,29 @@ def confirm_lot_sale(
 
         sell_lot(db, auction, lot)
         finish_auction_if_lots_terminal(auction, lots)
+        was_auction_finished = auction.status == AuctionStatus.FINISHED
+        sold_event = {
+            "event": "lot_sold",
+            "settlement": "manual",
+            "auction_id": str(auction.id),
+            "lot_id": str(lot.id),
+            "seller_id": str(auction.seller_id),
+            "winner_id": str(lot.winner_id),
+            "sold_price": str(lot.current_price),
+        }
 
         db.commit()
+        logger.info("lot sold", extra=sold_event)
+        if was_auction_finished:
+            logger.info(
+                "auction finished",
+                extra={
+                    "event": "auction_finished",
+                    "reason": "all_lots_terminal",
+                    "auction_id": str(auction.id),
+                    "operator_id": str(user.id),
+                },
+            )
         return get_lot(db, auction.id, lot.id)
     except Exception:
         db.rollback()
@@ -604,8 +665,29 @@ def confirm_lot_sale_after_window(
 
         sell_lot(db, auction, lot)
         finish_auction_if_lots_terminal(auction, lots)
+        was_auction_finished = auction.status == AuctionStatus.FINISHED
+        sold_event = {
+            "event": "lot_sold",
+            "settlement": "auto_window",
+            "auction_id": str(auction.id),
+            "lot_id": str(lot.id),
+            "seller_id": str(auction.seller_id),
+            "winner_id": str(lot.winner_id),
+            "sold_price": str(lot.current_price),
+        }
 
         db.commit()
+        logger.info("lot sold", extra=sold_event)
+        if was_auction_finished:
+            logger.info(
+                "auction finished",
+                extra={
+                    "event": "auction_finished",
+                    "reason": "all_lots_terminal",
+                    "auction_id": str(auction.id),
+                    "operator_id": "auto_window",
+                },
+            )
         return get_lot(db, auction.id, lot.id)
     except Exception:
         db.rollback()
@@ -644,6 +726,15 @@ def cancel_auction(db: Session, auction_id: UUID, user: User) -> AuctionRead:
             lot.item.status = ItemStatus.AVAILABLE
 
         db.commit()
+        logger.info(
+            "auction cancelled",
+            extra={
+                "event": "auction_cancelled",
+                "auction_id": str(auction.id),
+                "operator_id": str(user.id),
+                "lots_count": len(lots),
+            },
+        )
         return auction_to_read(get_auction_model(db, auction.id))
     except Exception:
         db.rollback()
@@ -675,6 +766,8 @@ def finish_auction(db: Session, auction_id: UUID, user: User) -> AuctionRead:
             )
 
         lots = auction_repository.get_auction_lots_for_update(db, auction.id)
+        sold_count = 0
+        unsold_count = 0
 
         for lot in lots:
             if lot.status in TERMINAL_LOT_STATUSES:
@@ -683,9 +776,11 @@ def finish_auction(db: Session, auction_id: UUID, user: User) -> AuctionRead:
             if lot.winner_id is None:
                 lot.status = LotStatus.UNSOLD
                 lot.item.status = ItemStatus.AVAILABLE
+                unsold_count += 1
                 continue
 
             sell_lot(db, auction, lot)
+            sold_count += 1
 
         auction.status = AuctionStatus.FINISHED
         now = utc_now()
@@ -693,6 +788,17 @@ def finish_auction(db: Session, auction_id: UUID, user: User) -> AuctionRead:
             auction.ends_at = now
 
         db.commit()
+        logger.info(
+            "auction finished",
+            extra={
+                "event": "auction_finished",
+                "reason": "manual_finish",
+                "auction_id": str(auction.id),
+                "operator_id": str(user.id),
+                "sold_count": sold_count,
+                "unsold_count": unsold_count,
+            },
+        )
         return auction_to_read(get_auction_model(db, auction.id))
     except Exception:
         db.rollback()

@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from app.ws.auction import auction_ws_manager
 
 
 router = APIRouter(prefix="/ws", tags=["websocket"])
+logger = logging.getLogger(__name__)
 
 
 def get_ws_user(token: str, db: Session) -> User | None:
@@ -49,16 +51,41 @@ async def auction_websocket(
 ) -> None:
     user = get_ws_user(token, db)
     if user is None:
+        logger.warning(
+            "websocket rejected",
+            extra={
+                "event": "websocket_rejected",
+                "auction_id": str(auction_id),
+                "reason": "invalid_token",
+            },
+        )
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
     try:
         auction = auction_service.get_auction(db, auction_id)
     except AppError:
+        logger.warning(
+            "websocket rejected",
+            extra={
+                "event": "websocket_rejected",
+                "auction_id": str(auction_id),
+                "user_id": str(user.id),
+                "reason": "auction_unavailable",
+            },
+        )
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
     await auction_ws_manager.connect(auction_id, websocket)
+    logger.info(
+        "websocket connected",
+        extra={
+            "event": "websocket_connected",
+            "auction_id": str(auction_id),
+            "user_id": str(user.id),
+        },
+    )
 
     try:
         await websocket.send_json(
@@ -91,5 +118,23 @@ async def auction_websocket(
                 )
     except WebSocketDisconnect:
         auction_ws_manager.disconnect(auction_id, websocket)
+        logger.info(
+            "websocket disconnected",
+            extra={
+                "event": "websocket_disconnected",
+                "auction_id": str(auction_id),
+                "user_id": str(user.id),
+                "reason": "client_disconnect",
+            },
+        )
     except RuntimeError:
         auction_ws_manager.disconnect(auction_id, websocket)
+        logger.warning(
+            "websocket disconnected",
+            extra={
+                "event": "websocket_disconnected",
+                "auction_id": str(auction_id),
+                "user_id": str(user.id),
+                "reason": "runtime_error",
+            },
+        )
