@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from app.models.user import User
 from app.rate_limit import policies as rate_limit_policies
 from app.rate_limit.dependencies import get_rate_limiter
 from app.rate_limit.service import RateLimiter
+from app.tasks.notifications import enqueue_registration_email
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -21,11 +22,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def register_user(
     payload: UserCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> User:
     rate_limit_policies.check_register_rate_limit(rate_limiter, request)
-    return auth_service.register_user(payload, db)
+    user = auth_service.register_user(payload, db)
+    background_tasks.add_task(enqueue_registration_email, user.id)
+    return user
 
 
 @router.post("/login", response_model=TokenPair)

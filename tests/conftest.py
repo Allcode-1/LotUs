@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import utils as auth_utils
 from app.api.v1 import auction as auction_api
+from app.core.config import settings
 from app.db.session import Base, get_db
 from app.main import app as fastapi_app
 from app.redis.client import get_redis
@@ -101,13 +102,15 @@ def fake_redis():
 
 
 @pytest.fixture(scope="function")
-def client(db_session: Session, fake_redis: FakeRedis):
+def client(db_session: Session, fake_redis: FakeRedis, monkeypatch):
     def override_get_db():
         yield db_session
 
     def override_get_redis():
         return fake_redis
 
+    monkeypatch.setattr(settings, "ws_pubsub_enabled", False)
+    monkeypatch.setattr(settings, "celery_tasks_enabled", False)
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_redis] = override_get_redis
 

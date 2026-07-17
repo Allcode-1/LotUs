@@ -1,88 +1,281 @@
 # LotUs
 
-LotUs is a FastAPI backend for an auction-style marketplace. The project is built as a backend engineering MVP: users upload owned items, create auctions with lots, start auctions manually, accept bids in real time, reserve bidder balances, and settle sold lots.
+LotUs is a FastAPI backend API for an auction-style marketplace.
 
-This is not a production marketplace yet. The current focus is a correct domain core with REST commands, WebSocket updates, database invariants, Redis-backed rate limiting/cache, migrations, and tests. Redis pub/sub, durable background jobs, payment integration, Telegram notifications, and deployment hardening are planned as later layers.
+This project is built as a backend engineering portfolio project, focused on
+auction domain modeling, transactional bidding, balance reservation, WebSocket
+live updates, PostgreSQL invariants, Redis, Celery/RabbitMQ, S3-compatible item
+images, and integration testing.
 
 ## Engineering Focus
 
-- FastAPI REST API with thin routers and service-layer domain logic.
-- PostgreSQL, SQLAlchemy, Alembic migrations, and explicit database constraints.
-- RS256 JWT auth with access/refresh tokens and role-based admin actions.
-- Item image upload through S3-compatible object storage with presigned read URLs.
-- Auction, lot, bid, item, and balance invariants backed by service checks and database constraints.
-- WebSocket auction rooms for live events over REST/DB truth.
+- RS256 JWT authentication with access and refresh tokens.
+- User/admin roles with admin-only balance top-ups.
+- Owned item management with image uploads through S3-compatible storage.
+- Auction lifecycle: scheduled, active, finished, cancelled.
+- Lot lifecycle: pending, active, sold, unsold, cancelled.
+- Bid workflow with balance reservation and previous-winner release.
+- Seller/admin auction management: start, cancel, finish, confirm lot sale.
+- Transaction boundaries in the service layer.
+- Row-level locks for bidding, settlement, lifecycle changes, items, and balances.
+- PostgreSQL schema with SQLAlchemy 2, Alembic migrations, constraints, and indexes.
 - Redis-backed rate limiting for auth and bid commands.
-- Cache-aside auction snapshots with explicit invalidation after mutations.
-- Request-scoped application logging with domain events for auth, auctions, bids, balance, Redis, and WebSocket flow.
-- Pytest integration coverage for auth, items, balances, auctions, bidding, WebSocket flow, and DB-level impossible states.
-
-## Current Capabilities
-
-- Auth: register, login, refresh, logout, current user, admin user listing.
-- Items: upload items with 1-10 images, list all items, list my items, update/delete owned mutable items, manage item images.
-- Balance: users have an account balance and reserved amount; admins can top up users.
-- Auctions: owners create auctions from owned items, seller/admin can start, cancel, finish, and confirm lot sale.
-- Bids: active users can bid on active lots if they are not the seller and have enough available balance.
-- Settlement: winning bidder funds are reserved during bidding and transferred to the seller when the lot is sold.
-- Rate limiting: register/login and bid commands are protected by Redis counters.
-- Cache: auction snapshots use cache-aside with invalidation after lifecycle, bid, and sale mutations.
-- Realtime: auction WebSocket clients receive connection confirmation, snapshot, ping/pong, and live auction events.
+- Redis cache-aside for auction snapshots.
+- Redis Pub/Sub fanout for WebSocket auction events.
+- Celery + RabbitMQ background jobs for auction lifecycle, delayed settlement,
+  cleanup, and notification stubs.
+- Request-scoped logging with domain event metadata.
+- Pytest integration coverage for HTTP, WebSocket, cache, Pub/Sub, Celery
+  registration, and database invariants.
 
 ## Domain Model
 
+LotUs models a marketplace where users upload owned items, combine one or more
+items into auction lots, start an auction, accept bids in real time, reserve the
+current winner's funds, and settle sold lots by moving money and item ownership
+inside one transactional domain flow.
+
+Core entities:
+
 - `User`: authenticated account with `user` or `admin` role.
-- `Balance`: money account with `amount`, `reserved_amount`, and computed `available_amount`.
-- `Item`: owned object that can be uploaded, edited while mutable, added to an auction, sold, and later owned by the buyer.
-- `ItemImage`: S3-backed image metadata for an item.
-- `Auction`: event created by a seller, with shared settings and lifecycle status.
-- `Lot`: auction line item that links one item to one auction and stores lot-specific bid settings.
+- `Balance`: user money account with `amount`, `reserved_amount`, and computed
+  `available_amount`.
+- `Item`: owned object that can be uploaded, listed, placed into an auction,
+  sold, and later owned by the buyer.
+- `ItemImage`: database metadata for images stored in S3-compatible object
+  storage.
+- `Auction`: seller-owned auction event with shared timing and bid settings.
+- `Lot`: one auction position linking one item to one auction, with optional
+  lot-specific bid settings.
 - `Bid`: immutable bid record for a lot.
 
-## Core Flow
+`Inventory` and `Profile` are intentionally not backend tables. A user's
+inventory is currently represented by the owned-item read model, mainly
+`GET /items/me`, while profile-style screens can be built from user and balance
+responses.
 
-1. A user registers and uploads an item with images.
-2. The owner creates an auction and selects one or more owned items as lots.
-3. The item becomes `in_auction`, preventing mutation and duplicate open listings.
-4. Seller or admin manually starts the auction.
-5. Bidders connect to the auction room through WebSocket and place bids through REST.
-6. The service validates bid amount, lot status, bidder permissions, and available balance.
-7. The current winner's bid amount is reserved; the previous winner's reservation is released.
-8. Seller/admin confirms sale, or the timer path can confirm after the sale window.
-9. The item owner changes to the winning bidder, bidder funds are captured, seller balance increases, and the lot becomes sold.
+Auction workflow:
+
+```text
+SCHEDULED -> ACTIVE -> FINISHED
+SCHEDULED -> CANCELLED
+```
+
+Lot workflow:
+
+```text
+PENDING -> ACTIVE -> SOLD
+PENDING -> ACTIVE -> UNSOLD
+PENDING -> CANCELLED
+```
+
+## Backend Design
+
+The main request path is intentionally simple:
+
+```text
+FastAPI route -> service -> repository -> SQLAlchemy/PostgreSQL
+```
+
+Routes stay thin: they parse dependencies, call services, invalidate cache, and
+schedule live events or background tasks around committed domain changes.
+Services own business rules and transaction boundaries. Repositories isolate
+SQLAlchemy queries and locking details. Models define relationships, enums, and
+database-level invariants.
+
+Redis and Celery are used around the domain rather than inside every business
+rule: Redis protects hot endpoints, stores short-lived auction snapshots, and
+fans out WebSocket events; Celery handles delayed or periodic work that should
+not depend on a single HTTP request staying alive.
+
+## Engineering Decisions
+
+**Why separate `Item`, `Auction`, and `Lot`?**
+An item is an owned object. An auction is an event. A lot is the auction position
+that connects one item to that event and stores bidding state. This keeps the
+model ready for auctions with one item or many items without overloading `Item`
+with temporary auction-specific fields.
+
+**Why keep transactions in services?**
+Bidding and settlement touch several aggregates at once: lot state, bid record,
+winner balance, previous winner balance, seller balance, and item ownership.
+Keeping `commit`/`rollback` in the service layer makes those changes atomic and
+keeps route handlers thin.
+
+**Why REST plus WebSocket instead of WebSocket-only bidding?**
+REST remains the command and source-of-truth path. WebSocket is the live delivery
+channel for already-persisted changes. This makes reconnect behavior simpler:
+the client can always fetch a fresh REST snapshot and then resume listening for
+events.
+
+**Why Redis Pub/Sub?**
+Each API process owns only its local WebSocket connections. Redis Pub/Sub lets
+one committed auction event reach every API process, and each process forwards
+the event to its local clients.
+
+**Why cache-aside only for auction snapshots?**
+Auction snapshots are useful read targets and easy to rebuild from PostgreSQL.
+Cache-aside keeps PostgreSQL as the source of truth and makes invalidation
+explicit after bid, lifecycle, and settlement mutations.
+
+## Authentication
+
+The authentication flow includes user registration, login, bcrypt password
+hashing, RS256 access/refresh JWTs, refresh sessions stored in PostgreSQL,
+refresh-token rotation, logout/revoke, and a current-user endpoint.
+
+Registration can enqueue a notification task. The notification task is currently
+a stub and logs the intended event instead of sending real email.
+
+## Items And Storage
+
+Users can upload items with images. Item images are stored outside PostgreSQL in
+S3-compatible storage such as MinIO, AWS S3, or Cloudflare R2. The database keeps
+metadata such as storage key, content type, size, and sort order.
+
+Current image rules:
+
+- item creation requires images;
+- an item can have at most 10 images;
+- supported content types are JPEG, PNG, and WebP;
+- the backend returns presigned read URLs.
+
+For local MinIO setup, see [docs/MINIO.md](docs/MINIO.md).
+
+## Auction And Bidding
+
+The auction core supports:
+
+- creating an auction from one or more owned available items;
+- moving selected items into `in_auction` status;
+- manual start by seller/admin;
+- manual cancel before bids exist;
+- manual finish by seller/admin;
+- bidding on active lots;
+- automatic release of the previous highest bidder's reserved funds;
+- manual lot sale confirmation;
+- delayed lot sale confirmation after the bid window;
+- automatic auction finish when all lots become terminal.
+
+Bid placement is transactional:
+
+```text
+lock lot -> validate auction/lot/bidder/amount -> lock balances
+-> release previous reservation -> reserve new bid -> write bid
+-> update lot -> commit -> publish live event
+```
+
+Settlement is also transactional:
+
+```text
+lock auction/lots -> lock seller and winner balances
+-> capture reserved funds -> credit seller -> move item ownership
+-> mark lot sold -> maybe finish auction -> commit
+```
+
+## WebSocket Flow
+
+WebSocket is used for live auction rooms, not for durable state.
+
+Client flow:
+
+```text
+REST snapshot -> WebSocket connect -> connected -> auction_snapshot -> live events
+```
+
+Connection URL:
+
+```text
+/api/v1/ws/auctions/{auction_id}?token=<access_token>
+```
+
+Supported client message:
+
+- `ping` -> `pong`
+
+Server events currently include:
+
+- `auction_started`
+- `auction_cancelled`
+- `auction_finished`
+- `bid_placed`
+- `lot_sold`
+
+On reconnect, the client should fetch a fresh REST snapshot. Redis Pub/Sub does
+not replay missed events, and the in-memory WebSocket manager does not store
+event history.
+
+## Redis
+
+Redis is used in three places:
+
+- fixed-window rate limiting;
+- cache-aside auction snapshots;
+- Pub/Sub fanout for auction WebSocket events.
+
+Rate limiting covers:
+
+- registration by client IP;
+- login by client IP and username+IP;
+- bids by bidder and lot.
+
+Cache reads are designed to fail open by default. Rate limiting is fail-closed
+by default so protected commands do not silently become unlimited when Redis is
+unavailable.
+
+## Celery / Background Jobs
+
+RabbitMQ is used as the Celery broker. The API process enqueues tasks, workers
+consume tasks, and Celery Beat schedules periodic maintenance.
+
+Current tasks:
+
+- `lotus.auctions.auto_confirm_lot_sale`: delayed settlement after the current
+  bid window.
+- `lotus.auctions.sync_lifecycle`: periodic auction lifecycle synchronization.
+- `lotus.cleanup.expired_refresh_sessions`: cleanup for old expired refresh
+  sessions.
+- `lotus.notifications.registration_email`: registration email stub.
+- `lotus.notifications.auction_started_telegram`: auction-start Telegram stub.
+- `lotus.notifications.auction_finished_telegram`: auction-finished Telegram
+  stub.
+
+Notification tasks are intentionally placeholders for now. Real SMTP and
+Telegram bot delivery are planned as later integrations.
+
+## Logging
+
+The logging layer provides request-scoped metadata and domain event logs for
+auth, balances, auctions, bids, Redis, Celery, and WebSocket flow.
+
+By default logs are printed to stdout in a readable local format. For container
+or log-collector environments, use:
+
+```env
+LOG_FORMAT=json
+```
+
+This keeps the application compatible with ELK/Loki-style collection without
+binding the codebase to a specific logging vendor.
 
 ## API Overview
 
-The app exposes grouped routes under `/api/v1`:
+The API covers these main areas:
 
-- `/auth` for registration, login, refresh, logout, and user identity.
-- `/items` for owned item and image management.
-- `/balance` for current balance and admin top-ups.
-- `/auctions` for auction lifecycle, lots, bids, and settlement.
-- `/ws/auctions/{auction_id}` for auction-room live updates.
+- Auth: register, login, refresh, logout, current user, admin user list.
+- Items: create items with images, list items, list my items, update/delete
+  mutable owned items, manage item images.
+- Balance: current user balance and admin top-ups.
+- Auctions: create, list, start, cancel, finish, confirm sale, read lot bids.
+- WebSocket: auction-room snapshot and live events.
 
-Use FastAPI docs for exact request/response schemas:
+See the interactive OpenAPI documentation for exact schemas and endpoint list:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-## WebSocket Flow
-
-WebSocket is used as a live event channel, not as the source of truth.
-
-The durable client flow is:
-
-1. Fetch auction state through REST.
-2. Open `/api/v1/ws/auctions/{auction_id}?token=<access_token>`.
-3. Receive `connected`.
-4. Receive `auction_snapshot`.
-5. Apply later events such as `auction_started`, `bid_placed`, `lot_sold`, and `auction_finished`.
-6. On reconnect, fetch a fresh REST snapshot before trusting new live events.
-
-The current WebSocket manager is in memory. It is fine for the MVP and tests, but it is not multi-worker-safe. Redis pub/sub is the planned next step for production-like fanout.
-
-## Setup
+## Local Development
 
 Install dependencies:
 
@@ -90,13 +283,13 @@ Install dependencies:
 uv sync
 ```
 
-Copy environment settings:
+Create environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-Create JWT keys if `certs/private.pem` and `certs/public.pem` are missing:
+Generate JWT keys if they are missing:
 
 ```bash
 mkdir -p certs
@@ -104,12 +297,10 @@ openssl genrsa -out certs/private.pem 2048
 openssl rsa -in certs/private.pem -pubout -out certs/public.pem
 ```
 
-Configure `DATABASE_URL`, `TEST_DATABASE_URL`, and S3-compatible storage settings in `.env`.
-
-Start local PostgreSQL and Redis if needed:
+Start local infrastructure:
 
 ```bash
-docker compose up -d postgres redis
+docker compose up -d postgres redis rabbitmq
 ```
 
 Apply migrations:
@@ -124,11 +315,29 @@ Run the API:
 uv run uvicorn app.main:app --reload
 ```
 
-For local or VPS MinIO setup, see [docs/MINIO.md](docs/MINIO.md).
+Run Celery worker and Beat in separate terminals when testing background jobs:
 
-## Tests And Checks
+```bash
+uv run celery -A app.celery_app:celery_app worker -l info
+uv run celery -A app.celery_app:celery_app beat -l info
+```
 
-`TEST_DATABASE_URL` must point to a dedicated test database whose name contains `test`. The test setup refuses to run against the main database.
+RabbitMQ management UI:
+
+```text
+http://127.0.0.1:15672
+```
+
+The current `docker-compose.yml` starts infrastructure services only. API,
+worker, and Beat containers are not fully packaged yet because production Docker
+hardening is still roadmap work.
+
+## Testing
+
+`TEST_DATABASE_URL` must point to a dedicated test database whose name contains
+`test`. The test setup refuses to run against the main database.
+
+Run the main checks:
 
 ```bash
 uv run ruff check app tests alembic
@@ -137,26 +346,82 @@ uv run python -m compileall -q app tests alembic
 uv run alembic check
 ```
 
-Current coverage is integration-heavy: HTTP flows, WebSocket behavior, rate limiting, cache invalidation, and database invariant checks are tested through the real FastAPI app and SQLAlchemy session. Redis is faked in tests through dependency overrides, so `pytest` does not need a live Redis server.
+The test suite covers:
 
-## Current Limits
+- auth HTTP flows;
+- item and balance HTTP flows;
+- auction happy paths and negative paths;
+- bid invariants and balance reservation;
+- WebSocket snapshot and live bid events;
+- Redis cache and Pub/Sub behavior through fakes;
+- Celery task registration and disabled-enqueue behavior;
+- database-level impossible states.
 
-- WebSocket connections and sale timers are in memory.
-- Auto-start, durable auto-confirm, email/TG notifications, and payment integration are not implemented yet.
-- Rate limiting is implemented for auth and bids, but broader abuse controls and audit logging are not implemented yet.
-- Admin bootstrap is still operational/manual, not a polished onboarding flow.
-- Docker files exist, but production deployment hardening is still a roadmap item.
+Tests do not require live Redis or RabbitMQ. Redis is isolated through fakes and
+Celery enqueueing is disabled where HTTP tests need deterministic behavior.
+
+## Current Status
+
+LotUs is an MVP / backend portfolio project.
+
+Currently implemented:
+
+- auth and refresh sessions;
+- item/image management;
+- balance top-up and reservation model;
+- auction, lot, bid, and settlement domain core;
+- WebSocket auction rooms;
+- Redis rate limiting, cache-aside, and Pub/Sub fanout;
+- Celery/RabbitMQ tasks for auction lifecycle and cleanup;
+- logging and request IDs;
+- Alembic migrations;
+- integration tests for the main flows.
+
+Prepared but not fully implemented:
+
+- notification task boundaries for email and Telegram;
+- auction-interest/watch behavior for pre-start notifications;
+- delayed and periodic job infrastructure;
+- MinIO/S3-compatible storage wiring;
+- JSON logging for container log collectors.
+
+Needs hardening:
+
+- outbox pattern for durable event/task dispatch after DB commits;
+- idempotency keys for sensitive commands such as bids and balance operations;
+- stronger WebSocket authentication transport than query-string tokens;
+- full concurrency/load tests for high-contention bidding;
+- broader permission matrix tests;
+- payment integration and ledger/audit modeling;
+- production Dockerfile and deploy documentation;
+- dependency/security audit and CI.
 
 ## Roadmap
 
-- Redis pub/sub for multi-worker WebSocket fanout.
-- Broader cache strategy only where it has clear read-path value.
-- Background jobs for auto-start, auto-finish, sale confirmation, and notifications.
-- Telegram bot integration and notification workflows.
-- Payment integration and stronger ledger/audit modeling.
-- Containerized test deployment with documented operational commands.
-- Broader security pass: secrets handling, upload scanning, audit logs, and abuse controls.
+### v0.2
+
+- Auction watch/interest model.
+- Pre-start Telegram reminders.
+- Real registration email delivery.
+- Real Telegram bot integration.
+- More WebSocket reconnect and stale-event handling tests.
+- Broader auction permission matrix.
+- Fix strict `mypy` issues and add type-check configuration.
+
+### v0.3
+
+- Outbox table for durable notifications and WebSocket event dispatch.
+- Payment provider integration.
+- Ledger-style financial audit trail.
+- Idempotency keys for bid and payment commands.
+- Containerized API/worker/beat deployment.
+- CI pipeline with tests, lint, migrations, and security checks.
 
 ## What This Project Is Not
 
-LotUs is not trying to be a finished commercial auction platform yet. The current value is the backend core: transactional domain behavior, database-backed invariants, WebSocket event flow, migrations, and tests that make future infrastructure work safer.
+- Not a production-ready auction marketplace.
+- Not a full payment platform.
+- Not a complete Telegram bot project yet.
+- Not a microservice system.
+- Not a high-traffic/load-tested realtime auction engine yet.
+- Not a frontend application.

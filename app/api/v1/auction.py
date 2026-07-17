@@ -17,7 +17,12 @@ from app.schemas.auction import AuctionCreate, AuctionRead, BidCreate, BidRead, 
 from app.services import auction as auction_service
 from app.services import auction_query as auction_query_service
 from app.services import auction_timers
-from app.ws.auction import auction_ws_manager
+from app.tasks.auction import enqueue_lot_auto_confirm
+from app.tasks.notifications import (
+    enqueue_auction_finished_telegram,
+    enqueue_auction_started_telegram,
+)
+from app.ws.pubsub import publish_auction_event
 
 
 router = APIRouter(prefix="/auctions", tags=["auctions"])
@@ -73,13 +78,14 @@ def start_auction(
     auction = auction_service.start_auction(db, auction_id, user)
     auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
-        auction_ws_manager.broadcast,
+        publish_auction_event,
         auction_id,
         {
             "type": "auction_started",
             "auction": auction.model_dump(mode="json"),
         },
     )
+    background_tasks.add_task(enqueue_auction_started_telegram, auction_id)
     return auction
 
 
@@ -94,13 +100,14 @@ def cancel_auction(
     auction = auction_service.cancel_auction(db, auction_id, user)
     auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
-        auction_ws_manager.broadcast,
+        publish_auction_event,
         auction_id,
         {
             "type": "auction_cancelled",
             "auction": auction.model_dump(mode="json"),
         },
     )
+    background_tasks.add_task(enqueue_auction_finished_telegram, auction_id)
     return auction
 
 
@@ -115,7 +122,7 @@ def finish_auction(
     auction = auction_service.finish_auction(db, auction_id, user)
     auction_cache.invalidate_auction(auction_id)
     background_tasks.add_task(
-        auction_ws_manager.broadcast,
+        publish_auction_event,
         auction_id,
         {
             "type": "auction_finished",
@@ -144,13 +151,14 @@ def confirm_lot_sale(
     )
     if auction.status == AuctionStatus.FINISHED:
         background_tasks.add_task(
-            auction_ws_manager.broadcast,
+            publish_auction_event,
             auction_id,
             {
                 "type": "auction_finished",
                 "auction": auction.model_dump(mode="json"),
             },
         )
+        background_tasks.add_task(enqueue_auction_finished_telegram, auction_id)
     return lot
 
 
@@ -180,7 +188,7 @@ def place_bid(
     lot = auction_service.get_lot(db, auction_id, lot_id)
 
     background_tasks.add_task(
-        auction_ws_manager.broadcast,
+        publish_auction_event,
         auction_id,
         {
             "type": "bid_placed",
@@ -192,7 +200,7 @@ def place_bid(
 
     if lot.sale_confirmable_at is not None:
         background_tasks.add_task(
-            auction_timers.auto_confirm_lot_sale,
+            enqueue_lot_auto_confirm,
             auction_id,
             lot_id,
             lot.sale_confirmable_at,

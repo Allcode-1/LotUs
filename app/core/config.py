@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     redis_socket_connect_timeout_seconds: float = 1
     redis_socket_timeout_seconds: float = 1
+    ws_pubsub_enabled: bool = True
+    ws_pubsub_channel: str = "lotus:v1:auction-events"
+    ws_pubsub_reconnect_delay_seconds: float = 1
+    ws_pubsub_local_fallback: bool = True
     cache_enabled: bool = True
     cache_fail_open: bool = True
     auction_cache_ttl_seconds: int = 30
@@ -39,6 +43,16 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = ""
     log_level: str = "INFO"
     log_format: str = "plain"
+    celery_tasks_enabled: bool = True
+    celery_broker_url: str = "pyamqp://guest:guest@127.0.0.1:5672//"
+    celery_result_backend: str | None = None
+    celery_task_always_eager: bool = False
+    celery_task_eager_propagates: bool = True
+    celery_broker_connection_timeout_seconds: float = 1
+    auction_lifecycle_sync_interval_seconds: int = 60
+    auction_lifecycle_sync_limit: int = 100
+    cleanup_interval_seconds: int = 3600
+    refresh_session_cleanup_retention_days: int = 7
     s3_endpoint_url: str | None = None
     s3_bucket: str = "lotus-media"
     s3_region: str = "us-east-1"

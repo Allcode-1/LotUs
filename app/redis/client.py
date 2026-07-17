@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 
 from redis import Redis
 
@@ -18,6 +18,10 @@ class RedisClient(Protocol):
     def expire(self, name: str, time: int) -> bool: ...
 
     def ttl(self, name: str) -> int: ...
+
+    def publish(self, channel: str, message: str) -> int: ...
+
+    def pubsub(self) -> Any: ...
 
 
 @lru_cache

@@ -10,6 +10,7 @@ class FakeRedis:
         self.setex_calls: list[tuple[str, int, str]] = []
         self.delete_calls: list[tuple[str, ...]] = []
         self.incr_calls: list[str] = []
+        self.publish_calls: list[tuple[str, str]] = []
 
     def get(self, name: str) -> str | None:
         self._purge_if_expired(name)
@@ -55,6 +56,10 @@ class FakeRedis:
         if expires_at is None:
             return -1
         return max(ceil(expires_at - monotonic()), 0)
+
+    def publish(self, channel: str, message: str) -> int:
+        self.publish_calls.append((channel, message))
+        return 1
 
     def _purge_if_expired(self, name: str) -> None:
         expires_at = self._expires_at.get(name)

@@ -20,12 +20,14 @@ FastAPI route -> service -> repository -> SQLAlchemy/PostgreSQL
 - `app/rate_limit`: generic Redis-backed counters and endpoint policies.
 - `app/cache`: cache-aside adapters and entity-specific cache keys.
 - `app/ws`: in-memory WebSocket connection manager.
+- `app/tasks`: Celery tasks for auction lifecycle sync, delayed sale confirmation, cleanup, and notification stubs.
+- `app/celery_app.py`: Celery application and Beat schedule.
 - `app/core`: settings, domain errors, and global exception handlers.
 - `app/storage`: S3-compatible object storage adapter.
 
 For aggregate commands like bidding and settlement, services own `commit` and `rollback`. That keeps multi-model changes atomic: lot state, bid record, item owner/status, and balances move together.
 
-Redis-backed concerns stay outside the domain services. Routes compose rate-limit policies and cache invalidation around service calls; the domain service still only knows SQLAlchemy and domain errors.
+Redis-backed and Celery-backed concerns stay outside the domain services. Routes compose rate-limit policies, cache invalidation, Pub/Sub events, and task enqueueing around service calls; the domain service still only knows SQLAlchemy and domain errors.
 
 ## Domain Boundaries
 
@@ -58,7 +60,7 @@ Lot statuses:
 - `unsold`: finished without a winner.
 - `cancelled`: cancelled with the parent auction.
 
-The MVP uses manual start/finish. Auto-start and durable timers belong to the future background-job layer.
+Manual start/finish remains available for seller/admin control. Celery Beat also runs lifecycle synchronization: due scheduled auctions can be started automatically, due active auctions can be finished automatically, and due sale-confirmation windows can be settled by the worker.
 
 ## Bidding And Settlement
 
@@ -76,7 +78,7 @@ Bid placement is a transactional command:
 
 Sale confirmation is also transactional:
 
-1. Seller/admin confirms the lot sale, or the timer path calls the same settlement logic after the confirmation window.
+1. Seller/admin confirms the lot sale, or the Celery delayed task calls the same settlement logic after the confirmation window.
 2. Winner reserved funds are captured.
 3. Seller balance increases.
 4. Item ownership moves to the winner.
@@ -127,6 +129,14 @@ The current implementation is still an MVP. It protects the core transaction pat
 
 REST commands change state. WebSocket broadcasts the resulting state.
 
+Auction events use Redis Pub/Sub for cross-process fanout:
+
+```text
+REST command -> DB commit -> Redis publish -> every API process receives event -> local WebSocket broadcast
+```
+
+Each API process still owns only its local WebSocket connections. Redis Pub/Sub is the bridge between processes.
+
 Current auction-room flow:
 
 ```text
@@ -145,14 +155,15 @@ Server events currently include:
 - `bid_placed`
 - `lot_sold`
 
-On reconnect, the client should fetch a fresh REST snapshot. The in-memory manager does not store missed events.
+On reconnect, the client should fetch a fresh REST snapshot. Redis Pub/Sub does not replay missed events, and the in-memory manager does not store them.
 
 ## Redis Usage
 
-Redis is currently used for two concerns:
+Redis is currently used for three concerns:
 
 - rate limiting;
-- cache-aside auction snapshots.
+- cache-aside auction snapshots;
+- WebSocket auction event fanout.
 
 Rate limiting uses fixed windows with atomic Redis `INCR` plus `EXPIRE`:
 
@@ -171,6 +182,31 @@ mutation -> commit DB changes -> delete cached auction snapshot
 
 The cached snapshot TTL is intentionally short because auction responses include presigned item image URLs. Current invalidation points include auction start/cancel/finish, lot sale confirmation, and bid placement.
 
+WebSocket fanout publishes auction events to one Redis channel:
+
+```text
+lotus:v1:auction-events
+```
+
+Messages contain the auction id and the event payload. Every API process subscribes to the channel on startup and forwards matching events to its local WebSocket connections. If Pub/Sub is disabled locally, the publisher falls back to direct in-process broadcast. If Redis publish fails, local fallback can keep single-process development usable, but multi-worker delivery depends on Redis being healthy.
+
+## Celery And RabbitMQ
+
+RabbitMQ is used as the Celery broker for durable background tasks. The API process enqueues tasks; Celery workers consume them; Celery Beat schedules periodic tasks.
+
+Current tasks:
+
+- `lotus.auctions.auto_confirm_lot_sale`: delayed task scheduled after a bid's sale-confirmation window.
+- `lotus.auctions.sync_lifecycle`: Beat task that starts due auctions, confirms due lot sales, and finishes due auctions.
+- `lotus.cleanup.expired_refresh_sessions`: periodic cleanup for old expired refresh sessions.
+- `lotus.notifications.registration_email`: email stub after registration.
+- `lotus.notifications.auction_started_telegram`: Telegram stub for users interested in an auction.
+- `lotus.notifications.auction_finished_telegram`: Telegram stub for auction completion.
+
+The worker uses the same service functions as HTTP commands where possible, so database locks and domain invariants stay in one domain layer. Celery tasks invalidate auction cache and publish WebSocket events after successful DB changes.
+
+Notification tasks are intentionally stubbed for now. They log the intended event and will later be wired to SMTP and the Telegram bot.
+
 ## Logging and Observability
 
 Logging is configured in `app/core/logging.py` and attached through `RequestContextMiddleware`.
@@ -180,7 +216,7 @@ The current logging layer provides:
 - request-scoped `X-Request-ID`;
 - HTTP completion logs with method, path, status, duration, client IP, and user agent;
 - application error logs from the global exception handlers;
-- focused domain event logs for auth, balance top-up, auction lifecycle, bids, lot settlement, Redis rate-limit/cache failures, and WebSocket room connection flow;
+- focused domain event logs for auth, balance top-up, auction lifecycle, bids, lot settlement, Redis rate-limit/cache failures, Celery tasks, and WebSocket room connection flow;
 - `LOG_LEVEL` and `LOG_FORMAT` configuration.
 
 By default logs use a readable console format:
@@ -215,14 +251,13 @@ Tests are integration-oriented:
 - Cache tests use fake Redis to prove cache-aside reads and mutation invalidation.
 - DB invariant tests intentionally try to write impossible states and expect `IntegrityError`.
 
-External object storage is faked in tests, Redis is faked in tests, password hashing is shortened, the in-memory sale timer is disabled, and each test runs inside an isolated database transaction.
+External object storage is faked in tests, Redis is faked in tests, Celery enqueueing is disabled in HTTP tests, password hashing is shortened, and each test runs inside an isolated database transaction.
 
 ## Known MVP Limits
 
-- WebSocket manager is process-local.
-- Sale timer is process-local and not durable.
-- No Redis pub/sub layer yet.
-- No background job worker yet.
+- WebSocket manager is process-local, with Redis Pub/Sub fanout between processes.
+- Celery worker and Beat must be running for automatic lifecycle behavior.
+- Notification tasks are stubs until SMTP and Telegram bot integrations are implemented.
 - No payment integration yet.
 - No production observability/audit trail yet.
 
