@@ -1,3 +1,28 @@
+x-lotus-env: &lotus-env
+  DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/lotusdb
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: pyamqp://guest:guest@rabbitmq:5672//
+  CELERY_TASKS_ENABLED: "true"
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: lotus-media
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: lotus-root
+  S3_SECRET_ACCESS_KEY: lotus-root-password
+  S3_FORCE_PATH_STYLE: "true"
+  LOG_LEVEL: INFO
+  LOG_FORMAT: plain
+  AUTH_JWT__PUBLIC_KEY_PATH: certs/public.pem
+  AUTH_JWT__PRIVATE_KEY_PATH: certs/private.pem
+
+x-lotus-app: &lotus-app
+  image: lotus-api:local
+  build:
+    context: .
+  environment:
+    <<: *lotus-env
+  volumes:
+    - lotus-certs:/app/certs
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -36,5 +61,102 @@ services:
       timeout: 3s
       retries: 10
 
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: lotus-root
+      MINIO_ROOT_PASSWORD: lotus-root-password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - lotus-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: lotus-root
+      MINIO_ROOT_PASSWORD: lotus-root-password
+      MINIO_DEFAULT_BUCKET: lotus-media
+      MINIO_DEFAULT_BUCKET_ANONYMOUS_POLICY: none
+      MINIO_BUCKET_REGION: us-east-1
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set lotus http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing --region "$$MINIO_BUCKET_REGION" "lotus/$$MINIO_DEFAULT_BUCKET"
+        mc anonymous set "$$MINIO_DEFAULT_BUCKET_ANONYMOUS_POLICY" "lotus/$$MINIO_DEFAULT_BUCKET"
+    restart: "no"
+
+  migrate:
+    <<: *lotus-app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *lotus-app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    <<: *lotus-app
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "-l", "info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  beat:
+    <<: *lotus-app
+    command: ["celery", "-A", "app.celery_app:celery_app", "beat", "-l", "info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   lotus-postgres-data:
+  lotus-minio-data:
+  lotus-certs:
