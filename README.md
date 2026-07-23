@@ -165,6 +165,11 @@ lock lot -> validate auction/lot/bidder/amount -> lock balances
 -> update lot -> commit -> publish live event
 ```
 
+Bid commands may include an `Idempotency-Key` header. A successful bid response is
+stored with a request fingerprint, so client retries with the same key and same
+payload return the original bid instead of creating another bid. Reusing the same
+key with a different lot or amount is rejected.
+
 Settlement is also transactional:
 
 ```text
@@ -234,7 +239,7 @@ Current tasks:
   bid window.
 - `lotus.auctions.sync_lifecycle`: periodic auction lifecycle synchronization.
 - `lotus.cleanup.expired_refresh_sessions`: cleanup for old expired refresh
-  sessions.
+  sessions and idempotency records.
 - `lotus.notifications.registration_email`: registration email stub.
 - `lotus.notifications.auction_started_telegram`: auction-start Telegram stub.
 - `lotus.notifications.auction_finished_telegram`: auction-finished Telegram
@@ -388,7 +393,7 @@ Prepared but not fully implemented:
 Needs hardening:
 
 - outbox pattern for durable event/task dispatch after DB commits;
-- idempotency keys for sensitive commands such as bids and balance operations;
+- idempotency keys for balance/payment commands beyond the current bid support;
 - stronger WebSocket authentication transport than query-string tokens;
 - full concurrency/load tests for high-contention bidding;
 - broader permission matrix tests;
@@ -413,7 +418,7 @@ Needs hardening:
 - Outbox table for durable notifications and WebSocket event dispatch.
 - Payment provider integration.
 - Ledger-style financial audit trail.
-- Idempotency keys for bid and payment commands.
+- Idempotency keys for payment commands.
 - Containerized API/worker/beat deployment.
 - CI pipeline with tests, lint, migrations, and security checks.
 

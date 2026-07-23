@@ -198,7 +198,8 @@ Current tasks:
 
 - `lotus.auctions.auto_confirm_lot_sale`: delayed task scheduled after a bid's sale-confirmation window.
 - `lotus.auctions.sync_lifecycle`: Beat task that starts due auctions, confirms due lot sales, and finishes due auctions.
-- `lotus.cleanup.expired_refresh_sessions`: periodic cleanup for old expired refresh sessions.
+- `lotus.cleanup.expired_refresh_sessions`: periodic cleanup for old expired
+  refresh sessions and idempotency records.
 - `lotus.notifications.registration_email`: email stub after registration.
 - `lotus.notifications.auction_started_telegram`: Telegram stub for users interested in an auction.
 - `lotus.notifications.auction_finished_telegram`: Telegram stub for auction completion.
