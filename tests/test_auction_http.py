@@ -1,6 +1,9 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import func, select
+
+from app.models.bid import Bid
 from app.models.lot import Lot
 from app.models.user import UserRole
 from app.core.config import settings
@@ -263,6 +266,151 @@ def test_bid_invariants_for_owner_price_increment_and_reservations(
     )
     assert closed_window_response.status_code == 409
     assert_error_code(closed_window_response, "lot_bid_window_closed")
+
+
+def test_bid_idempotency_key_replays_successful_bid_without_new_state_change(
+    client,
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "bid_user_rate_limit_limit", 1)
+
+    seller, _seller_tokens, seller_headers = create_user_with_token(
+        client,
+        "idempotent_seller",
+    )
+    bidder, _bidder_tokens, bidder_headers = create_user_with_token(
+        client,
+        "idempotent_bidder",
+    )
+    _admin, _admin_tokens, admin_headers = create_user_with_token(
+        client,
+        "idempotent_admin",
+        db_session,
+        role=UserRole.ADMIN,
+    )
+
+    item = create_item(client, seller_headers, title="Idempotent bid item")
+    auction = create_auction(client, seller_headers, [item["id"]])
+    lot = start_auction(client, seller_headers, auction["id"])["lots"][0]
+    top_up_balance(client, admin_headers, bidder["id"], amount="500.00")
+
+    idempotent_headers = {
+        **bidder_headers,
+        "Idempotency-Key": "bid-once-key",
+    }
+    first_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=idempotent_headers,
+        json={"amount": "100.00"},
+    )
+    assert first_response.status_code == 201, first_response.text
+
+    replay_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=idempotent_headers,
+        json={"amount": "100.00"},
+    )
+    assert replay_response.status_code == 201, replay_response.text
+    assert replay_response.json() == first_response.json()
+
+    bid_count = db_session.scalar(select(func.count()).select_from(Bid))
+    assert bid_count == 1
+
+    bidder_balance = client.get("/api/v1/balance/me", headers=bidder_headers).json()
+    assert money(bidder_balance["amount"]) == money("500.00")
+    assert money(bidder_balance["reserved_amount"]) == money("100.00")
+    assert money(bidder_balance["available_amount"]) == money("400.00")
+
+
+def test_bid_idempotency_key_rejects_reuse_with_different_payload(
+    client,
+    db_session,
+):
+    _seller, _seller_tokens, seller_headers = create_user_with_token(
+        client,
+        "idempotency_conflict_seller",
+    )
+    bidder, _bidder_tokens, bidder_headers = create_user_with_token(
+        client,
+        "idempotency_conflict_bidder",
+    )
+    _admin, _admin_tokens, admin_headers = create_user_with_token(
+        client,
+        "idempotency_conflict_admin",
+        db_session,
+        role=UserRole.ADMIN,
+    )
+
+    item = create_item(client, seller_headers, title="Idempotency conflict item")
+    auction = create_auction(client, seller_headers, [item["id"]])
+    lot = start_auction(client, seller_headers, auction["id"])["lots"][0]
+    top_up_balance(client, admin_headers, bidder["id"], amount="500.00")
+
+    idempotent_headers = {
+        **bidder_headers,
+        "Idempotency-Key": "same-key-different-amount",
+    }
+    first_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=idempotent_headers,
+        json={"amount": "100.00"},
+    )
+    assert first_response.status_code == 201, first_response.text
+
+    conflict_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=idempotent_headers,
+        json={"amount": "105.00"},
+    )
+    assert conflict_response.status_code == 409
+    assert_error_code(conflict_response, "idempotency_key_conflict")
+
+
+def test_bid_sale_confirmation_window_uses_configured_delay(
+    client,
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "sale_confirmation_delay_seconds", 7)
+
+    _seller, _seller_tokens, seller_headers = create_user_with_token(
+        client,
+        "configured_window_seller",
+    )
+    bidder, _bidder_tokens, bidder_headers = create_user_with_token(
+        client,
+        "configured_window_bidder",
+    )
+    _admin, _admin_tokens, admin_headers = create_user_with_token(
+        client,
+        "configured_window_admin",
+        db_session,
+        role=UserRole.ADMIN,
+    )
+
+    item = create_item(client, seller_headers, title="Configured window item")
+    auction = create_auction(client, seller_headers, [item["id"]])
+    lot = start_auction(client, seller_headers, auction["id"])["lots"][0]
+    top_up_balance(client, admin_headers, bidder["id"], amount="500.00")
+
+    bid_response = client.post(
+        f"/api/v1/auctions/{auction['id']}/lots/{lot['id']}/bids",
+        headers=bidder_headers,
+        json={"amount": "100.00"},
+    )
+    assert bid_response.status_code == 201, bid_response.text
+
+    auction_response = client.get(
+        f"/api/v1/auctions/{auction['id']}",
+        headers=seller_headers,
+    )
+    assert auction_response.status_code == 200, auction_response.text
+    updated_lot = auction_response.json()["lots"][0]
+
+    last_bid_at = datetime.fromisoformat(updated_lot["last_bid_at"])
+    sale_confirmable_at = datetime.fromisoformat(updated_lot["sale_confirmable_at"])
+    assert sale_confirmable_at - last_bid_at == timedelta(seconds=7)
 
 
 def test_bids_require_active_auction_and_reject_finished_auction(
