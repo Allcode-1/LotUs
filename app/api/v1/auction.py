@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, status
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_active_user
@@ -176,14 +176,33 @@ def place_bid(
     user: Annotated[User, Depends(get_current_active_user)],
     rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
     auction_cache: Annotated[AuctionCache, Depends(get_auction_cache)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> BidRead:
+    replayed_bid = auction_service.get_replayed_bid(
+        db,
+        auction_id,
+        lot_id,
+        payload,
+        user,
+        idempotency_key,
+    )
+    if replayed_bid is not None:
+        return replayed_bid
+
     rate_limit_policies.check_bid_rate_limit(
         rate_limiter,
         user.id,
         auction_id,
         lot_id,
     )
-    bid = auction_service.place_bid(db, auction_id, lot_id, payload, user)
+    bid = auction_service.place_bid(
+        db,
+        auction_id,
+        lot_id,
+        payload,
+        user,
+        idempotency_key=idempotency_key,
+    )
     auction_cache.invalidate_auction(auction_id)
     lot = auction_service.get_lot(db, auction_id, lot_id)
 

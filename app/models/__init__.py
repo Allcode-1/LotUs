@@ -6,6 +6,7 @@ from app.models.item_image import ItemImage
 from app.models.auction import Auction
 from app.models.lot import Lot
 from app.models.bid import Bid
+from app.models.idempotency_record import IdempotencyRecord
 # pyarch:model-imports
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "Auction",
     "Lot",
     "Bid",
+    "IdempotencyRecord",
     # pyarch:model-exports
 ]

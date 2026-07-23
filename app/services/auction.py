@@ -1,10 +1,12 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from http import HTTPStatus
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import (
     ConflictError,
     ForbiddenError,
@@ -20,11 +22,12 @@ from app.repositories import auction as auction_repository
 from app.repositories import item as item_repository
 from app.schemas.auction import AuctionCreate, AuctionRead, BidCreate, BidRead, LotRead
 from app.services import balance as balance_service
+from app.services import idempotency as idempotency_service
 from app.services import item as item_service
 
 
 ZERO_MONEY = Decimal("0.00")
-SALE_CONFIRMATION_DELAY_SECONDS = 30
+BID_IDEMPOTENCY_OPERATION = "auction.place_bid"
 logger = logging.getLogger(__name__)
 AUCTIONABLE_ITEM_STATUSES = {ItemStatus.DRAFT, ItemStatus.AVAILABLE}
 TERMINAL_LOT_STATUSES = {
@@ -398,13 +401,69 @@ def get_required_bid_amount(lot: Lot, auction: Auction) -> Decimal:
     return lot.current_price + increment
 
 
+def build_bid_idempotency_request_hash(
+    auction_id: UUID,
+    lot_id: UUID,
+    payload: BidCreate,
+) -> str:
+    return idempotency_service.build_request_hash(
+        {
+            "auction_id": str(auction_id),
+            "lot_id": str(lot_id),
+            "amount": str(payload.amount),
+        }
+    )
+
+
+def get_replayed_bid(
+    db: Session,
+    auction_id: UUID,
+    lot_id: UUID,
+    payload: BidCreate,
+    bidder: User,
+    idempotency_key: str | None,
+) -> BidRead | None:
+    if idempotency_key is None:
+        return None
+
+    replay = idempotency_service.get_replay(
+        db,
+        user_id=bidder.id,
+        operation=BID_IDEMPOTENCY_OPERATION,
+        key=idempotency_key,
+        request_hash=build_bid_idempotency_request_hash(auction_id, lot_id, payload),
+    )
+    if replay is None:
+        return None
+
+    return BidRead.model_validate(replay.response_body)
+
+
 def place_bid(
     db: Session,
     auction_id: UUID,
     lot_id: UUID,
     payload: BidCreate,
     bidder: User,
+    idempotency_key: str | None = None,
 ) -> BidRead:
+    idempotency_record = None
+    if idempotency_key is not None:
+        claim = idempotency_service.claim_idempotency_key(
+            db,
+            user_id=bidder.id,
+            operation=BID_IDEMPOTENCY_OPERATION,
+            key=idempotency_key,
+            request_hash=build_bid_idempotency_request_hash(
+                auction_id,
+                lot_id,
+                payload,
+            ),
+        )
+        if claim.replay is not None:
+            return BidRead.model_validate(claim.replay.response_body)
+        idempotency_record = claim.record
+
     try:
         lot = auction_repository.get_lot_for_update(db, lot_id)
         if lot is None:
@@ -462,7 +521,7 @@ def place_bid(
 
         bid_time = utc_now()
         sale_confirmable_at = bid_time + timedelta(
-            seconds=SALE_CONFIRMATION_DELAY_SECONDS
+            seconds=settings.sale_confirmation_delay_seconds
         )
 
         bidder_balance.reserved_amount += payload.amount
@@ -479,8 +538,17 @@ def place_bid(
         lot.last_bid_at = bid_time
         lot.sale_confirmable_at = sale_confirmable_at
 
-        db.commit()
+        db.flush()
         db.refresh(bid)
+        bid_read = bid_to_read(bid)
+        if idempotency_record is not None:
+            idempotency_service.complete_record(
+                idempotency_record,
+                response_status_code=int(HTTPStatus.CREATED),
+                response_body=bid_read.model_dump(mode="json"),
+            )
+
+        db.commit()
         logger.info(
             "bid placed",
             extra={
@@ -497,7 +565,7 @@ def place_bid(
                 "sale_confirmable_at": sale_confirmable_at.isoformat(),
             },
         )
-        return bid_to_read(bid)
+        return bid_read
     except Exception:
         db.rollback()
         raise

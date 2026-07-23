@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     celery_broker_connection_timeout_seconds: float = 1
     auction_lifecycle_sync_interval_seconds: int = 60
     auction_lifecycle_sync_limit: int = 100
+    sale_confirmation_delay_seconds: int = 30
+    idempotency_key_ttl_seconds: int = 24 * 60 * 60
     cleanup_interval_seconds: int = 3600
     refresh_session_cleanup_retention_days: int = 7
     s3_endpoint_url: str | None = None
