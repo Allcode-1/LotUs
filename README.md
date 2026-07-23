@@ -302,10 +302,36 @@ openssl genrsa -out certs/private.pem 2048
 openssl rsa -in certs/private.pem -pubout -out certs/public.pem
 ```
 
-Start local infrastructure:
+Start the full Docker Compose stack:
 
 ```bash
-docker compose up -d postgres redis rabbitmq
+docker compose up --build
+```
+
+The compose stack runs PostgreSQL, Redis, RabbitMQ, MinIO, migrations, API,
+Celery worker, and Celery Beat. The API is exposed at:
+
+```text
+http://127.0.0.1:8000
+```
+
+RabbitMQ management UI:
+
+```text
+http://127.0.0.1:15672
+```
+
+MinIO console:
+
+```text
+http://127.0.0.1:9001
+```
+
+For manual local development without containerizing the app, start only the
+supporting services:
+
+```bash
+docker compose up -d postgres redis rabbitmq minio minio-init
 ```
 
 Apply migrations:
@@ -327,16 +353,6 @@ uv run celery -A app.celery_app:celery_app worker -l info
 uv run celery -A app.celery_app:celery_app beat -l info
 ```
 
-RabbitMQ management UI:
-
-```text
-http://127.0.0.1:15672
-```
-
-The current `docker-compose.yml` starts infrastructure services only. API,
-worker, and Beat containers are not fully packaged yet because production Docker
-hardening is still roadmap work.
-
 ## Testing
 
 `TEST_DATABASE_URL` must point to a dedicated test database whose name contains
@@ -350,6 +366,9 @@ uv run pytest -q
 uv run python -m compileall -q app tests alembic
 uv run alembic check
 ```
+
+GitHub Actions CI runs lint, compile, migrations, Alembic drift check, and
+pytest against PostgreSQL. Strict `mypy` is still roadmap work.
 
 The test suite covers:
 
@@ -398,8 +417,8 @@ Needs hardening:
 - full concurrency/load tests for high-contention bidding;
 - broader permission matrix tests;
 - payment integration and ledger/audit modeling;
-- production Dockerfile and deploy documentation;
-- dependency/security audit and CI.
+- production deploy hardening beyond the local Docker Compose stack;
+- dependency/security audit.
 
 ## Roadmap
 
@@ -419,8 +438,8 @@ Needs hardening:
 - Payment provider integration.
 - Ledger-style financial audit trail.
 - Idempotency keys for payment commands.
-- Containerized API/worker/beat deployment.
-- CI pipeline with tests, lint, migrations, and security checks.
+- Production deploy hardening for API/worker/beat containers.
+- Security scanning in CI.
 
 ## What This Project Is Not
 
